@@ -1,3 +1,10 @@
 <resources>
-    <string name="app_name">gphs</string>
+    <string name="app_name">GPHS</string>
+    <string name="widget_description">현재 수업과 다음 수업을 보여주는 군포고 시간표 위젯</string>
+    <string name="shortcut_timetable">오늘 시간표</string>
+    <string name="shortcut_timetable_long">군포고 오늘 시간표 열기</string>
+    <string name="shortcut_meal">오늘 급식</string>
+    <string name="shortcut_meal_long">군포고 오늘 급식 열기</string>
+    <string name="shortcut_assistant">학교 AI</string>
+    <string name="shortcut_assistant_long">군포고 AI 도우미 열기</string>
 </resources>

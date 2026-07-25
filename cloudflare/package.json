@@ -1,0 +1,19 @@
+{
+  "name": "gunpo-school-data-worker",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply gunpo-school-data --local",
+    "db:migrate:remote": "wrangler d1 migrations apply gunpo-school-data --remote"
+  },
+  "dependencies": {
+    "cheerio": "1.2.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260724.1",
+    "typescript": "5.9.3",
+    "wrangler": "4.114.0"
+  }
+}
