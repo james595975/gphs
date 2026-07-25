@@ -863,11 +863,12 @@ private fun CalendarGrid(dates: List<LocalDate>, displayedMonth: YearMonth, sele
 private fun UnavailableMealBlock(type: String, date: LocalDate, event: AcademicEvent?) {
     val color = if (type == "석식") SchoolOrange else SchoolGreen
     val isWeekday = date.dayOfWeek !in setOf(DayOfWeek.SATURDAY, DayOfWeek.SUNDAY)
-    val isPendingAugust = date.year == LocalDate.now().year && date.monthValue == 8 &&
-        !date.isBefore(LocalDate.of(date.year, 8, 13)) && date.isAfter(LocalDate.now())
+    val pendingMealInfoStart = LocalDate.of(LocalDate.now().year, 8, 13)
+    val isPendingMealInfo = date.year == LocalDate.now().year &&
+        !date.isBefore(pendingMealInfoStart) && date.isAfter(LocalDate.now())
     val reason = when {
-        isWeekday && isPendingAugust && type == "중식" -> "8월 개학 이후 중식은 아직 NEIS 정보가 없습니다."
-        isWeekday && isPendingAugust && type == "석식" -> "8월 개학 이후 석식은 아직 식단표가 나오지 않았습니다."
+        isWeekday && isPendingMealInfo && type == "중식" -> "중식은 아직 NEIS 정보가 없습니다."
+        isWeekday && isPendingMealInfo && type == "석식" -> "석식은 아직 식단표가 나오지 않았습니다."
         type == "석식" && isWeekday && event != null -> "학사일정 ‘${event.title}’로 석식이 제공되지 않습니다."
         else -> "해당 날에는 $type 제공이 되지 않습니다."
     }
