@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "991014325791",
+    "project_id": "gphs-beta",
+    "storage_bucket": "gphs-beta.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:991014325791:android:3f74612c7c43cb02068f2a",
+        "android_client_info": {
+          "package_name": "kr.hs.gunpo.school"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBy6Caq3OvyOY0V2FZQ5aYix2KVobU0PoY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

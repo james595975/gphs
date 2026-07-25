@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut android:shortcutId="timetable" android:enabled="true" android:icon="@drawable/ic_shortcut_schedule" android:shortcutShortLabel="@string/shortcut_timetable" android:shortcutLongLabel="@string/shortcut_timetable_long">
+        <intent android:action="android.intent.action.VIEW" android:targetPackage="kr.hs.gunpo.school" android:targetClass="kr.hs.gunpo.school.MainActivity" android:data="gunposchool://timetable" />
+    </shortcut>
+    <shortcut android:shortcutId="meal" android:enabled="true" android:icon="@drawable/ic_shortcut_meal" android:shortcutShortLabel="@string/shortcut_meal" android:shortcutLongLabel="@string/shortcut_meal_long">
+        <intent android:action="android.intent.action.VIEW" android:targetPackage="kr.hs.gunpo.school" android:targetClass="kr.hs.gunpo.school.MainActivity" android:data="gunposchool://meal" />
+    </shortcut>
+    <shortcut android:shortcutId="assistant" android:enabled="true" android:icon="@drawable/ic_shortcut_chat" android:shortcutShortLabel="@string/shortcut_assistant" android:shortcutLongLabel="@string/shortcut_assistant_long">
+        <intent android:action="android.intent.action.VIEW" android:targetPackage="kr.hs.gunpo.school" android:targetClass="kr.hs.gunpo.school.MainActivity" android:data="gunposchool://assistant" />
+    </shortcut>
+</shortcuts>
