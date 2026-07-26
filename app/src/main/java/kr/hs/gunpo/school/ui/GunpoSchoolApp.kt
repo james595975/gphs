@@ -1,6 +1,7 @@
 package kr.hs.gunpo.school.ui
 
 import android.Manifest
+import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -8,6 +9,7 @@ import android.provider.Settings
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -87,6 +89,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
@@ -166,6 +169,13 @@ private fun effectiveEvents(settings: UserSettings, neisState: NeisState): List<
         .filter { it.grades.isEmpty() || settings.grade in it.grades }
         .sortedBy { it.start }
 
+private val homeEventKeywords = listOf(
+    "개학", "입학", "졸업", "시험", "평가", "수능", "체육", "축제", "행사", "상담", "설명회",
+)
+
+private fun isHomeHighlight(event: AcademicEvent): Boolean =
+    homeEventKeywords.any { keyword -> event.title.contains(keyword) }
+
 private fun effectiveLessons(date: LocalDate, settings: UserSettings, neisState: NeisState): List<Lesson> {
     if (SchoolData.isVacation(date)) return SchoolData.lessonsFor(date, settings)
     val remote = neisState.timetableByDate[date]
@@ -183,9 +193,43 @@ fun GunpoSchoolApp(viewModel: MainViewModel, startDestination: String? = null) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val neisState by viewModel.neisState.collectAsStateWithLifecycle()
     val noticeState by viewModel.noticeState.collectAsStateWithLifecycle()
+
+    if (!settings.isLoaded) {
+        Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
+            Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                LinearProgressIndicator(Modifier.width(160.dp))
+            }
+        }
+        return
+    }
+    if (!settings.isProfileConfigured) {
+        Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
+            ProfileSettings(settings, viewModel, padding, onBack = null, isInitialSetup = true)
+        }
+        return
+    }
+
     var selectedTab by remember(startDestination) { mutableStateOf(when (startDestination) { "timetable" -> MainTab.TIMETABLE; "meal" -> MainTab.MEAL; else -> MainTab.HOME }) }
     var openAssistant by remember(startDestination) { mutableStateOf(startDestination == "assistant") }
     var homeSelectionVersion by remember { mutableIntStateOf(0) }
+    var lastBackPressedAt by remember { mutableLongStateOf(0L) }
+    val context = LocalContext.current
+
+    BackHandler {
+        if (selectedTab != MainTab.HOME) {
+            openAssistant = false
+            homeSelectionVersion++
+            selectedTab = MainTab.HOME
+        } else {
+            val pressedAt = System.currentTimeMillis()
+            if (pressedAt - lastBackPressedAt <= 2_000L) {
+                (context as? Activity)?.finish()
+            } else {
+                lastBackPressedAt = pressedAt
+                Toast.makeText(context, "뒤로 버튼을 한 번 더 누르면 앱이 종료됩니다.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -251,6 +295,13 @@ private fun HomeScreen(settings: UserSettings, neisState: NeisState, noticeState
     LaunchedEffect(Unit) {
         while (true) { now = LocalDateTime.now(); delay(1_000) }
     }
+    BackHandler(enabled = showChat || showAllEvents || showClassAlign) {
+        when {
+            showChat -> showChat = false
+            showAllEvents -> showAllEvents = false
+            showClassAlign -> showClassAlign = false
+        }
+    }
     if (showChat) {
         SchoolAssistantScreen(settings, neisState, padding) { showChat = false }
         return
@@ -266,7 +317,10 @@ private fun HomeScreen(settings: UserSettings, neisState: NeisState, noticeState
     val lessons = effectiveLessons(now.toLocalDate(), settings, neisState)
     val moment = SchoolTimeline.moment(now, lessons)
     val meal = effectiveMeals(neisState).firstOrNull { it.date == now.toLocalDate() && it.type == "중식" }
-    val events = effectiveEvents(settings, neisState).filter { !it.end.isBefore(now.toLocalDate()) }.take(3)
+    val events = effectiveEvents(settings, neisState)
+        .filter { !it.end.isBefore(now.toLocalDate()) }
+        .filter(::isHomeHighlight)
+        .take(3)
 
     Column(Modifier.fillMaxSize().padding(padding)) {
         NavigationHeader("군포고등학교", badge = settings.className)
@@ -978,8 +1032,11 @@ private fun SettingsScreen(settings: UserSettings, neisState: NeisState, viewMod
             context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}")))
         }
     }
+    BackHandler(enabled = profileDetail || detail) {
+        if (profileDetail) profileDetail = false else detail = false
+    }
     if (profileDetail) {
-        ProfileSettings(settings, viewModel, padding) { profileDetail = false }
+        ProfileSettings(settings, viewModel, padding, onBack = { profileDetail = false })
     } else if (detail) {
         ScheduleSettings(settings, viewModel, padding) { detail = false }
     } else Column(Modifier.fillMaxSize().padding(padding)) {
@@ -1077,7 +1134,8 @@ private fun ProfileSettings(
     settings: UserSettings,
     viewModel: MainViewModel,
     padding: PaddingValues,
-    onBack: () -> Unit,
+    onBack: (() -> Unit)?,
+    isInitialSetup: Boolean = false,
 ) {
     var name by remember(settings.studentName) { mutableStateOf(settings.studentName) }
     var number by remember(settings.studentNumber) { mutableStateOf(settings.studentNumber) }
@@ -1087,11 +1145,24 @@ private fun ProfileSettings(
     val canSave = name.isNotBlank() && number.isNotBlank() && classNumber in 1..20
 
     Column(Modifier.fillMaxSize().padding(padding)) {
-        NavigationHeader("학생 정보", badge = "기기에만 저장", onBack = onBack)
+        NavigationHeader(
+            title = if (isInitialSetup) "학생 정보 입력" else "학생 정보",
+            badge = if (isInitialSetup) "최초 설정" else "기기에만 저장",
+            onBack = onBack,
+        )
         LazyColumn(
             contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
+            if (isInitialSetup) {
+                item {
+                    Text(
+                        "시간표와 학교 정보를 맞춤 제공하기 위해 학생 정보를 입력해 주세요. 입력한 정보는 이 기기에만 저장됩니다.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 14.sp,
+                    )
+                }
+            }
             item {
                 SettingsSection("기본 정보") {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -1145,12 +1216,12 @@ private fun ProfileSettings(
                 Button(
                     onClick = {
                         viewModel.updateProfile(name, number, grade, classNumber!!)
-                        onBack()
+                        onBack?.invoke()
                     },
                     enabled = canSave,
                     modifier = Modifier.fillMaxWidth().height(52.dp),
                 ) {
-                    Text("저장")
+                    Text(if (isInitialSetup) "시작하기" else "저장")
                 }
             }
         }
@@ -1161,6 +1232,13 @@ private fun ProfileSettings(
 private fun ScheduleSettings(settings: UserSettings, viewModel: MainViewModel, padding: PaddingValues, onBack: () -> Unit) {
     var showVacation by remember { mutableStateOf(false) }
     var selectedPeriod by remember { mutableStateOf<Int?>(null) }
+    BackHandler {
+        when {
+            selectedPeriod != null -> selectedPeriod = null
+            showVacation -> showVacation = false
+            else -> onBack()
+        }
+    }
     when {
         selectedPeriod != null -> VacationCourseSelection(selectedPeriod!!, settings, viewModel, padding) { selectedPeriod = null }
         showVacation -> VacationCourseSettings(settings, padding, onBack = { showVacation = false }, onPeriod = { selectedPeriod = it })

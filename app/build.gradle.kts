@@ -30,8 +30,8 @@ android {
         applicationId = "kr.hs.gunpo.school"
         minSdk = 33
         targetSdk = 37
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = 3
+        versionName = "0.1.2"
         buildConfigField("String", "GEMINI_API_KEY", "\"${embeddedGeminiApiKey.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
         buildConfigField("String", "GEMINI_CLOUD_MODEL", "\"gemini-3.5-flash-lite\"")
         buildConfigField("String", "CLOUDFLARE_API_BASE_URL", "\"${cloudflareApiBaseUrl.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
