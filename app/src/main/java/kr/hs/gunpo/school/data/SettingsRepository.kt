@@ -26,8 +26,8 @@ class SettingsRepository(private val context: Context) {
 
     val settings: Flow<UserSettings> = context.settingsDataStore.data.map { prefs ->
         UserSettings(
-            studentName = prefs[Keys.studentName] ?: "김동우",
-            studentNumber = prefs[Keys.studentNumber] ?: "20105",
+            studentName = prefs[Keys.studentName].orEmpty(),
+            studentNumber = prefs[Keys.studentNumber].orEmpty(),
             grade = prefs[Keys.grade] ?: 2,
             classNumber = prefs[Keys.classNumber] ?: 1,
             nightStudyByDay = (1..5).associateWith { prefs[Keys.nightStudy(it)] ?: 0 },
@@ -38,6 +38,7 @@ class SettingsRepository(private val context: Context) {
             vacationCourseByPeriod = (1..5).associateWith { prefs[Keys.vacationCourse(it)] ?: "self_study" },
             liveUpdatesEnabled = prefs[Keys.liveUpdates] ?: false,
             locationMonitoringEnabled = prefs[Keys.locationMonitoring] ?: false,
+            isLoaded = true,
         )
     }
 
