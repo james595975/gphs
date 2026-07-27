@@ -141,6 +141,9 @@ import kr.hs.gunpo.school.domain.SchoolMoment
 import kr.hs.gunpo.school.domain.SchoolAssistant
 import kr.hs.gunpo.school.domain.HybridSchoolAssistant
 import kr.hs.gunpo.school.domain.AssistantConversationTurn
+import kr.hs.gunpo.school.domain.HomeMealPresentation
+import kr.hs.gunpo.school.domain.HomeMealSelector
+import kr.hs.gunpo.school.domain.NetworkClock
 import kr.hs.gunpo.school.domain.SchoolTimeline
 import kr.hs.gunpo.school.ui.theme.Navy
 import kr.hs.gunpo.school.ui.theme.SchoolBlue
@@ -343,7 +346,7 @@ private fun NavigationHeader(
 
 @Composable
 private fun HomeScreen(settings: UserSettings, neisState: NeisState, noticeState: NoticeState, padding: PaddingValues, openChatInitially: Boolean = false, homeSelectionVersion: Int = 0, selectTab: (MainTab) -> Unit) {
-    var now by remember { mutableStateOf(LocalDateTime.now()) }
+    var now by remember { mutableStateOf(NetworkClock.now()) }
     var showChat by remember(openChatInitially) { mutableStateOf(openChatInitially) }
     var showAllEvents by remember { mutableStateOf(false) }
     var showClassAlign by remember { mutableStateOf(false) }
@@ -355,7 +358,17 @@ private fun HomeScreen(settings: UserSettings, neisState: NeisState, noticeState
         }
     }
     LaunchedEffect(Unit) {
-        while (true) { now = LocalDateTime.now(); delay(1_000) }
+        NetworkClock.synchronize()
+        var secondsUntilSync = 15 * 60
+        while (true) {
+            now = NetworkClock.now()
+            delay(1_000)
+            secondsUntilSync--
+            if (secondsUntilSync <= 0) {
+                NetworkClock.synchronize()
+                secondsUntilSync = 15 * 60
+            }
+        }
     }
     BackHandler(enabled = showChat || showAllEvents || showClassAlign) {
         when {
@@ -378,7 +391,7 @@ private fun HomeScreen(settings: UserSettings, neisState: NeisState, noticeState
     }
     val lessons = effectiveLessons(now.toLocalDate(), settings, neisState)
     val moment = SchoolTimeline.moment(now, lessons)
-    val meal = effectiveMeals(neisState).firstOrNull { it.date == now.toLocalDate() && it.type == "중식" }
+    val mealPresentation = HomeMealSelector.select(now, effectiveMeals(neisState))
     val events = effectiveEvents(settings, neisState)
         .filter { !it.end.isBefore(now.toLocalDate()) }
         .filter(::isHomeHighlight)
@@ -396,7 +409,7 @@ private fun HomeScreen(settings: UserSettings, neisState: NeisState, noticeState
                 item { StatusCard(moment) }
                 item { QuickMenu(selectTab, onClassAlign = { showClassAlign = true }) }
                 item { TodayScheduleCard(lessons, moment, onAll = { selectTab(MainTab.TIMETABLE) }) }
-                item { TodayMealCard(meal, onAll = { selectTab(MainTab.MEAL) }) }
+                item { TodayMealCard(mealPresentation, onAll = { selectTab(MainTab.MEAL) }) }
                 item { UpcomingEventsCard(events) { showAllEvents = true } }
                 item { RecentNoticesCard(noticeState.notices.ifEmpty { SchoolData.notices }, onAll = { selectTab(MainTab.NOTICE) }) }
             }
@@ -628,12 +641,23 @@ private fun TodayScheduleCard(lessons: List<Lesson>, moment: SchoolMoment, onAll
 }
 
 @Composable
-private fun TodayMealCard(meal: Meal?, onAll: () -> Unit) {
+private fun TodayMealCard(presentation: HomeMealPresentation, onAll: () -> Unit) {
+    val meal = presentation.meal
     SchoolCard {
-        SectionHeader("오늘의 급식", Icons.Default.Restaurant, "식단표", onAll)
+        SectionHeader(presentation.title, Icons.Default.Restaurant, "식단표", onAll)
         Spacer(Modifier.height(14.dp))
-        if (meal == null) Text("오늘은 등록된 급식 정보가 없습니다.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
-        else {
+        presentation.notice?.let {
+            Text(it, color = SchoolBlue, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(8.dp))
+        }
+        if (meal == null) {
+            val emptyMessage = if (presentation.notice != null) {
+                "내일 중식 정보가 없습니다."
+            } else {
+                "오늘은 등록된 ${presentation.type} 정보가 없습니다."
+            }
+            Text(emptyMessage, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+        } else {
             Text(meal.menu.take(3).joinToString(" · "), fontSize = 14.sp, fontWeight = FontWeight.Bold)
             if (meal.menu.size > 3) Text(meal.menu.drop(3).joinToString(" · "), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp, modifier = Modifier.padding(top = 7.dp))
             Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
