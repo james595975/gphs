@@ -4,10 +4,8 @@ val localProperties = Properties().apply {
     val propertiesFile = rootProject.file("local.properties")
     if (propertiesFile.exists()) propertiesFile.inputStream().use(::load)
 }
-val geminiApiKey = localProperties.getProperty("GEMINI_API_KEY", "")
 val cloudflareApiBaseUrl = localProperties.getProperty("CLOUDFLARE_API_BASE_URL", "").trimEnd('/')
 val firebaseConfigured = file("google-services.json").exists()
-val embeddedGeminiApiKey = if (firebaseConfigured) "" else geminiApiKey
 val releaseStoreFile = localProperties.getProperty("RELEASE_STORE_FILE", "")
 val releaseStorePassword = localProperties.getProperty("RELEASE_STORE_PASSWORD", "")
 val releaseKeyAlias = localProperties.getProperty("RELEASE_KEY_ALIAS", "")
@@ -30,10 +28,8 @@ android {
         applicationId = "kr.hs.gunpo.school"
         minSdk = 33
         targetSdk = 37
-        versionCode = 3
-        versionName = "0.1.2"
-        buildConfigField("String", "GEMINI_API_KEY", "\"${embeddedGeminiApiKey.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
-        buildConfigField("String", "GEMINI_CLOUD_MODEL", "\"gemini-3.5-flash-lite\"")
+        versionCode = 4
+        versionName = "0.1.3"
         buildConfigField("String", "CLOUDFLARE_API_BASE_URL", "\"${cloudflareApiBaseUrl.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
         buildConfigField("boolean", "FIREBASE_CONFIGURED", firebaseConfigured.toString())
         buildConfigField("String", "FIREBASE_AI_MODEL", "\"gemini-3.5-flash\"")
@@ -90,7 +86,6 @@ dependencies {
     implementation("androidx.datastore:datastore-preferences:1.2.1")
     implementation("androidx.glance:glance-appwidget:1.1.1")
     implementation("com.google.android.gms:play-services-location:21.3.0")
-    implementation("com.google.mlkit:genai-prompt:1.0.0-beta2")
     implementation(platform("com.google.firebase:firebase-bom:34.16.0"))
     implementation("com.google.firebase:firebase-ai")
     implementation("com.google.firebase:firebase-appcheck-playintegrity")

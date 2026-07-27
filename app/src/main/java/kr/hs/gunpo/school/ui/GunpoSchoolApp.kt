@@ -19,6 +19,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -49,8 +51,10 @@ import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LocationOff
@@ -63,6 +67,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
@@ -104,12 +109,20 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -126,10 +139,8 @@ import kr.hs.gunpo.school.data.UserSettings
 import kr.hs.gunpo.school.data.VacationCourseCatalog
 import kr.hs.gunpo.school.domain.SchoolMoment
 import kr.hs.gunpo.school.domain.SchoolAssistant
-import kr.hs.gunpo.school.domain.NanoAssistant
-import kr.hs.gunpo.school.domain.CloudGeminiAssistant
-import kr.hs.gunpo.school.domain.FirebaseCloudAssistant
 import kr.hs.gunpo.school.domain.HybridSchoolAssistant
+import kr.hs.gunpo.school.domain.AssistantConversationTurn
 import kr.hs.gunpo.school.domain.SchoolTimeline
 import kr.hs.gunpo.school.ui.theme.Navy
 import kr.hs.gunpo.school.ui.theme.SchoolBlue
@@ -193,6 +204,51 @@ fun GunpoSchoolApp(viewModel: MainViewModel, startDestination: String? = null) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val neisState by viewModel.neisState.collectAsStateWithLifecycle()
     val noticeState by viewModel.noticeState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    var showAlwaysLocationGuide by remember { mutableStateOf(false) }
+    val foregroundLocationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        showAlwaysLocationGuide = true
+    }
+    val requestLocationPermission = {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            showAlwaysLocationGuide = true
+        } else {
+            foregroundLocationPermission.launch(
+                arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION),
+            )
+        }
+    }
+    val initialNotificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        requestLocationPermission()
+    }
+    val requestInitialPermissions = {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
+            requestLocationPermission()
+        } else {
+            initialNotificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    if (showAlwaysLocationGuide) {
+        AlertDialog(
+            onDismissRequest = { showAlwaysLocationGuide = false },
+            title = { Text("위치 권한을 확인해 주세요") },
+            text = {
+                Text("학교 도착 여부와 정확한 위치를 확인하려면 앱 권한 설정에서 위치를 ‘정확한 위치 사용’ 및 ‘항상 허용’으로 변경해 주세요.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showAlwaysLocationGuide = false
+                        context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}")))
+                    },
+                ) { Text("권한 설정 열기") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAlwaysLocationGuide = false }) { Text("나중에") }
+            },
+        )
+    }
 
     if (!settings.isLoaded) {
         Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
@@ -204,7 +260,14 @@ fun GunpoSchoolApp(viewModel: MainViewModel, startDestination: String? = null) {
     }
     if (!settings.isProfileConfigured) {
         Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
-            ProfileSettings(settings, viewModel, padding, onBack = null, isInitialSetup = true)
+            ProfileSettings(
+                settings,
+                viewModel,
+                padding,
+                onBack = null,
+                isInitialSetup = true,
+                onInitialSetupComplete = requestInitialPermissions,
+            )
         }
         return
     }
@@ -213,7 +276,6 @@ fun GunpoSchoolApp(viewModel: MainViewModel, startDestination: String? = null) {
     var openAssistant by remember(startDestination) { mutableStateOf(startDestination == "assistant") }
     var homeSelectionVersion by remember { mutableIntStateOf(0) }
     var lastBackPressedAt by remember { mutableLongStateOf(0L) }
-    val context = LocalContext.current
 
     BackHandler {
         if (selectedTab != MainTab.HOME) {
@@ -346,7 +408,7 @@ private fun HomeScreen(settings: UserSettings, neisState: NeisState, noticeState
                 border = BorderStroke(1.dp, SchoolBlue.copy(alpha = .25f)),
             ) {
                 Box(Modifier.size(52.dp), contentAlignment = Alignment.Center) {
-                    Icon(Icons.AutoMirrored.Filled.Chat, "학교 AI 도우미 열기", tint = SchoolBlue, modifier = Modifier.size(23.dp))
+                    Icon(Icons.AutoMirrored.Filled.Chat, "Gemini 열기", tint = SchoolBlue, modifier = Modifier.size(23.dp))
                 }
             }
         }
@@ -357,16 +419,24 @@ private data class ChatMessage(val text: String, val fromUser: Boolean, val isTh
 
 @Composable
 private fun SchoolAssistantScreen(settings: UserSettings, neisState: NeisState, padding: PaddingValues, onDismiss: () -> Unit) {
-    val messages = remember { mutableStateListOf(ChatMessage("안녕하세요! 군포고 학교생활 도우미예요. 무엇이 궁금한가요?", false)) }
+    val messages = remember { mutableStateListOf(ChatMessage("안녕하세요! Gemini예요. 학교생활 정보와 일반 질문 모두 물어보세요.", false)) }
     var input by remember { mutableStateOf("") }
-    var nanoAvailable by remember { mutableStateOf<Boolean?>(null) }
     var isAnswering by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val messageListState = rememberLazyListState()
     val suggestions = listOf("오늘 시간표", "오늘 급식", "지금 몇 교시야?", "오늘 야자")
-    LaunchedEffect(Unit) { nanoAvailable = NanoAssistant.isAvailable() }
+    val screenWidthDp = LocalConfiguration.current.screenWidthDp
+    val messageMaxWidth = if (screenWidthDp >= 600) (screenWidthDp * .72f).dp else 310.dp
+
     fun send(text: String) {
         if (text.isBlank() || isAnswering) return
+        val history = messages.drop(1).windowed(2, 2, partialWindows = false).mapNotNull { pair ->
+            val user = pair.getOrNull(0)
+            val assistant = pair.getOrNull(1)
+            if (user?.fromUser == true && assistant != null && !assistant.fromUser && !assistant.isThinking) {
+                AssistantConversationTurn(user.text, assistant.text)
+            } else null
+        }.takeLast(4)
         messages += ChatMessage(text.trim(), true)
         messages += ChatMessage("", false, isThinking = true)
         val answerIndex = messages.lastIndex
@@ -375,86 +445,81 @@ private fun SchoolAssistantScreen(settings: UserSettings, neisState: NeisState, 
         scope.launch {
             val now = LocalDateTime.now()
             val factual = SchoolAssistant.answer(text, now, settings, effectiveLessons(now.toLocalDate(), settings, neisState), effectiveMeals(neisState).filter { it.date == now.toLocalDate() })
-            val answer = HybridSchoolAssistant.answer(text, factual, SchoolAssistant.isSchoolQuestion(text))
+            val result = HybridSchoolAssistant.answer(text, factual, SchoolAssistant.isSchoolQuestion(text), history)
             messages[answerIndex] = ChatMessage("", false)
-            answer.forEachIndexed { index, character ->
-                messages[answerIndex] = ChatMessage(answer.substring(0, index + 1), false)
+            result.text.forEachIndexed { index, character ->
+                messages[answerIndex] = ChatMessage(result.text.substring(0, index + 1), false)
                 delay(if (character in listOf('.', '!', '?', '。', '\n')) 65 else 14)
             }
             isAnswering = false
         }
     }
+
     LaunchedEffect(messages.size, messages.lastOrNull()?.text?.length?.div(12)) {
         if (messages.isNotEmpty()) messageListState.animateScrollToItem(messages.lastIndex)
     }
     Surface(Modifier.fillMaxSize().padding(padding), color = MaterialTheme.colorScheme.background) {
         Column(Modifier.fillMaxSize()) {
-            NavigationHeader(
-                "군포고 AI",
-                badge = when {
-                    nanoAvailable == true -> "Gemini Nano"
-                    FirebaseCloudAssistant.isConfigured() -> "Firebase AI"
-                    CloudGeminiAssistant.isConfigured() -> "Gemini Cloud"
-                    else -> "정확 답변"
-                },
-                onBack = onDismiss,
-            )
-                LazyColumn(
-                    state = messageListState,
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
-                    contentPadding = PaddingValues(18.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    itemsIndexed(messages) { _, message ->
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = if (message.fromUser) Arrangement.End else Arrangement.Start) {
-                            Surface(
-                                color = if (message.fromUser) SchoolBlue else MaterialTheme.colorScheme.surface,
-                                shape = RoundedCornerShape(18.dp),
-                                shadowElevation = if (message.fromUser) 0.dp else 1.dp,
-                                modifier = Modifier.widthIn(max = 310.dp),
-                            ) {
-                                if (message.isThinking) ThinkingIndicator()
-                                else Text(message.text, Modifier.padding(horizontal = 15.dp, vertical = 11.dp), color = if (message.fromUser) Color.White else MaterialTheme.colorScheme.onSurface, fontSize = 14.sp)
-                            }
+            NavigationHeader("Gemini", badge = "Gemini", onBack = onDismiss)
+            LazyColumn(
+                state = messageListState,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                contentPadding = PaddingValues(18.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                itemsIndexed(messages) { _, message ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (message.fromUser) Arrangement.End else Arrangement.Start) {
+                        Surface(
+                            color = if (message.fromUser) SchoolBlue else MaterialTheme.colorScheme.surface,
+                            shape = RoundedCornerShape(18.dp),
+                            shadowElevation = if (message.fromUser) 0.dp else 1.dp,
+                            modifier = Modifier.widthIn(max = messageMaxWidth),
+                        ) {
+                            if (message.isThinking) ThinkingIndicator()
+                            else Text(message.text, Modifier.padding(horizontal = 15.dp, vertical = 11.dp), color = if (message.fromUser) Color.White else MaterialTheme.colorScheme.onSurface, fontSize = 14.sp)
                         }
                     }
                 }
-                LazyColumn(contentPadding = PaddingValues(horizontal = 14.dp), modifier = Modifier.heightIn(max = 54.dp)) {
-                    item {
-                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                            suggestions.forEach { suggestion -> FilterChip(selected = false, onClick = { send(suggestion) }, label = { Text(suggestion, fontSize = 11.sp) }) }
-                        }
+            }
+            LazyColumn(contentPadding = PaddingValues(horizontal = 14.dp), modifier = Modifier.heightIn(max = 54.dp)) {
+                item {
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                        suggestions.forEach { suggestion -> FilterChip(selected = false, onClick = { send(suggestion) }, label = { Text(suggestion, fontSize = 11.sp) }) }
                     }
                 }
-                Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(value = input, onValueChange = { input = it }, modifier = Modifier.weight(1f), placeholder = { Text("학교생활 질문하기") }, singleLine = true)
-                    Button(onClick = { send(input) }, enabled = input.isNotBlank() && !isAnswering) { Text(if (isAnswering) "답변 중" else "전송") }
-                }
+            }
+            Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = { input = it },
+                    modifier = Modifier.weight(1f).onPreviewKeyEvent { event ->
+                        if (event.type == KeyEventType.KeyDown && event.key == Key.Enter && !event.isShiftPressed) {
+                            send(input)
+                            true
+                        } else false
+                    },
+                    placeholder = { Text("Gemini에게 질문하기") },
+                    singleLine = false,
+                    maxLines = 5,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(onSend = { send(input) }),
+                )
+                Button(onClick = { send(input) }, enabled = input.isNotBlank() && !isAnswering) { Text(if (isAnswering) "답변 중" else "전송") }
+            }
         }
     }
 }
-
 @Composable
 private fun ThinkingIndicator() {
-    val transition = rememberInfiniteTransition(label = "AI thinking")
-    val phase by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 3f,
-        animationSpec = infiniteRepeatable(animation = tween(900)),
-        label = "Thinking dots",
-    )
+    val transition = rememberInfiniteTransition(label = "Gemini thinking")
+    val phase by transition.animateFloat(initialValue = 0f, targetValue = 3f, animationSpec = infiniteRepeatable(animation = tween(900)), label = "Thinking dots")
     Row(Modifier.padding(horizontal = 15.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         repeat(3) { index ->
-            Box(
-                Modifier.size(7.dp)
-                    .alpha(if (phase.toInt().coerceIn(0, 2) == index) 1f else .28f)
-                    .background(SchoolBlue, CircleShape),
-            )
+            Box(Modifier.size(7.dp).alpha(if (phase.toInt().coerceIn(0, 2) == index) 1f else .28f).background(SchoolBlue, CircleShape))
         }
-        Text("학교 데이터를 확인하는 중", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(start = 4.dp))
+        Text("Gemini가 답변을 생각하고 있어요", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(start = 4.dp))
     }
 }
-
 @Composable
 private fun ProfileHeader(settings: UserSettings, now: LocalDateTime) {
     Column(
@@ -483,14 +548,14 @@ private fun ProfileHeader(settings: UserSettings, now: LocalDateTime) {
     }
 }
 
-private data class StatusUi(val label: String, val subject: String, val detail: String, val next: String, val active: Boolean)
+private data class StatusUi(val label: String, val subject: String, val detail: String, val next: String?, val active: Boolean)
 
 private fun statusUi(moment: SchoolMoment): StatusUi = when (moment) {
     is SchoolMoment.InClass -> StatusUi("LIVE · ${moment.lesson.period}교시", moment.lesson.subject, "${timeRange(moment.lesson)} · ${moment.lesson.room}", moment.next?.let { "${it.period}교시 · ${it.subject}" } ?: "오늘 수업 완료", true)
     is SchoolMoment.BetweenClasses -> StatusUi("쉬는시간", "${moment.next.startMinute - moment.previous.endMinute}분 휴식", "다음 교시 준비", "${moment.next.period}교시 · ${moment.next.subject}", false)
     is SchoolMoment.BeforeSchool -> StatusUi("등교 전", "수업 준비", "${SchoolTimeline.clock(moment.next.startMinute)} 시작", "${moment.next.period}교시 · ${moment.next.subject}", false)
-    is SchoolMoment.Finished -> StatusUi("수업 완료", "오늘 수업 완료", "${moment.last.period}교시까지 수고했어요", "내일 일정 확인", false)
-    SchoolMoment.NoSchool -> StatusUi("수업 없음", "오늘은 수업이 없습니다", "주말 또는 휴일", "학사일정 확인", false)
+    is SchoolMoment.Finished -> StatusUi("수업 완료", "오늘 수업 완료", "${moment.last.period}교시까지 수고했어요", null, false)
+    SchoolMoment.NoSchool -> StatusUi("수업 없음", "오늘은 수업이 없습니다", "주말 또는 휴일", null, false)
 }
 
 @Composable
@@ -509,9 +574,11 @@ private fun StatusCard(moment: SchoolMoment) {
                 Text(status.subject, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                 Text(status.detail, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
             }
-            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text("다음", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp)
-                Text(status.next, fontSize = 12.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.End)
+            status.next?.let { next ->
+                Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text("다음", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp)
+                    Text(next, fontSize = 12.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.End)
+                }
             }
         }
     }
@@ -1024,6 +1091,7 @@ private fun SettingsScreen(settings: UserSettings, neisState: NeisState, viewMod
     var detail by remember { mutableStateOf(false) }
     var profileDetail by remember { mutableStateOf(false) }
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) viewModel.updateLiveUpdates(true)
     }
@@ -1129,6 +1197,21 @@ private fun SettingsScreen(settings: UserSettings, neisState: NeisState, viewMod
     }
 }
 
+private data class ParsedStudentNumber(
+    val grade: Int,
+    val classNumber: Int,
+    val seatNumber: Int,
+)
+
+private fun parseStudentNumber(value: String): ParsedStudentNumber? {
+    if (value.length != 5 || value.any { !it.isDigit() }) return null
+    val grade = value.substring(0, 1).toInt()
+    val classNumber = value.substring(1, 3).toInt()
+    val seatNumber = value.substring(3, 5).toInt()
+    if (grade !in 1..3 || classNumber !in 1..20 || seatNumber !in 1..99) return null
+    return ParsedStudentNumber(grade, classNumber, seatNumber)
+}
+
 @Composable
 private fun ProfileSettings(
     settings: UserSettings,
@@ -1136,32 +1219,28 @@ private fun ProfileSettings(
     padding: PaddingValues,
     onBack: (() -> Unit)?,
     isInitialSetup: Boolean = false,
+    onInitialSetupComplete: (() -> Unit)? = null,
 ) {
     var name by remember(settings.studentName) { mutableStateOf(settings.studentName) }
     var number by remember(settings.studentNumber) { mutableStateOf(settings.studentNumber) }
-    var grade by remember(settings.grade) { mutableIntStateOf(settings.grade) }
-    var classText by remember(settings.classNumber) { mutableStateOf(settings.classNumber.toString()) }
-    val classNumber = classText.toIntOrNull()
-    val canSave = name.isNotBlank() && number.isNotBlank() && classNumber in 1..20
+    val parsedStudentNumber = parseStudentNumber(number)
+    val canSave = name.isNotBlank() && parsedStudentNumber != null
 
     Column(Modifier.fillMaxSize().padding(padding)) {
         NavigationHeader(
             title = if (isInitialSetup) "학생 정보 입력" else "학생 정보",
-            badge = if (isInitialSetup) "최초 설정" else "기기에만 저장",
             onBack = onBack,
         )
         LazyColumn(
             contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
-            if (isInitialSetup) {
-                item {
-                    Text(
-                        "시간표와 학교 정보를 맞춤 제공하기 위해 학생 정보를 입력해 주세요. 입력한 정보는 이 기기에만 저장됩니다.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 14.sp,
-                    )
-                }
+            item {
+                Text(
+                    "저장한 학생 정보는 이 기기에 저장되며 시간표·급식 등 NEIS 정보 조회에 사용됩니다.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 14.sp,
+                )
             }
             item {
                 SettingsSection("기본 정보") {
@@ -1175,37 +1254,18 @@ private fun ProfileSettings(
                         )
                         OutlinedTextField(
                             value = number,
-                            onValueChange = { value -> number = value.filter(Char::isDigit).take(8) },
+                            onValueChange = { value -> number = value.filter(Char::isDigit).take(5) },
                             label = { Text("학번") },
-                            supportingText = { Text("예: 20423") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
-                }
-            }
-            item {
-                SettingsSection("학급 정보") {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text("학년", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            (1..3).forEach { value ->
-                                FilterChip(
-                                    selected = grade == value,
-                                    onClick = { grade = value },
-                                    label = { Text("${value}학년") },
-                                    modifier = Modifier.weight(1f),
-                                )
-                            }
-                        }
-                        OutlinedTextField(
-                            value = classText,
-                            onValueChange = { value -> classText = value.filter(Char::isDigit).take(2) },
-                            label = { Text("반") },
                             supportingText = {
-                                Text(if (classText.isNotEmpty() && classNumber !in 1..20) "1반부터 20반까지 입력해 주세요." else "NEIS 시간표 조회에 사용됩니다.")
+                                Text(
+                                    when {
+                                        number.isEmpty() -> "예: 20315 → 2학년 3반 15번"
+                                        parsedStudentNumber != null -> "${parsedStudentNumber.grade}학년 ${parsedStudentNumber.classNumber}반 ${parsedStudentNumber.seatNumber}번 · NEIS 정보 자동 설정"
+                                        else -> "학번 5자리를 확인해 주세요. 예: 20315"
+                                    },
+                                )
                             },
-                            isError = classText.isNotEmpty() && classNumber !in 1..20,
+                            isError = number.isNotEmpty() && parsedStudentNumber == null,
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
                         )
@@ -1215,8 +1275,13 @@ private fun ProfileSettings(
             item {
                 Button(
                     onClick = {
-                        viewModel.updateProfile(name, number, grade, classNumber!!)
-                        onBack?.invoke()
+                        viewModel.updateProfile(
+                            name,
+                            number,
+                            parsedStudentNumber!!.grade,
+                            parsedStudentNumber.classNumber,
+                        )
+                        if (isInitialSetup) onInitialSetupComplete?.invoke() else onBack?.invoke()
                     },
                     enabled = canSave,
                     modifier = Modifier.fillMaxWidth().height(52.dp),

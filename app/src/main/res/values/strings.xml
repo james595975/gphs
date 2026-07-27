@@ -5,6 +5,6 @@
     <string name="shortcut_timetable_long">군포고 오늘 시간표 열기</string>
     <string name="shortcut_meal">오늘 급식</string>
     <string name="shortcut_meal_long">군포고 오늘 급식 열기</string>
-    <string name="shortcut_assistant">학교 AI</string>
-    <string name="shortcut_assistant_long">군포고 AI 도우미 열기</string>
+    <string name="shortcut_assistant">Gemini</string>
+    <string name="shortcut_assistant_long">Gemini 열기</string>
 </resources>

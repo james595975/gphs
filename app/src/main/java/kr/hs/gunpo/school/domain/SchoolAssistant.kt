@@ -18,6 +18,24 @@ object SchoolAssistant {
         return schoolKeywords.any(normalized::contains)
     }
 
+    fun isSchoolFollowUp(question: String, previousQuestion: String?): Boolean {
+        if (previousQuestion.isNullOrBlank() || !isSchoolQuestion(previousQuestion)) return false
+        val normalized = question.replace(" ", "").lowercase()
+        if (normalized.length > 24) return false
+        return listOf(
+            "그건", "그거", "그때", "그날", "그럼", "그러면", "다음", "몇", "왜", "언제", "어디",
+            "어떻게", "1차", "2차", "그수업", "그과목", "그메뉴",
+        ).any(normalized::contains)
+    }
+    /** Structured school facts must never be rewritten by a generative model. */
+    fun requiresExactAnswer(question: String): Boolean {
+        val normalized = question.replace(" ", "").lowercase()
+        return listOf(
+            "시간표", "수업", "과목", "교시", "급식", "중식", "점심", "석식", "저녁",
+            "밥", "메뉴", "야자", "야간자습",
+        ).any(normalized::contains)
+    }
+
     fun answer(
         question: String,
         now: LocalDateTime,
@@ -26,6 +44,7 @@ object SchoolAssistant {
         syncedMeals: List<Meal>? = null,
     ): String {
         val query = question.replace(" ", "")
+        val requestedPeriod = Regex("([1-8])교시").find(query)?.groupValues?.get(1)?.toIntOrNull()
         val lessons = syncedLessons ?: SchoolData.lessonsFor(now.toLocalDate(), settings)
         return when {
             "급식" in query || "중식" in query || "점심" in query || "석식" in query || "저녁" in query || "밥" in query || "메뉴" in query -> {
@@ -35,12 +54,18 @@ object SchoolAssistant {
                     "중식" in query || "점심" in query -> "중식"
                     else -> null
                 }
-                val selectedMeals = requestedType?.let { type -> meals.filter { it.type == type } } ?: meals
+                val selectedMeals = (requestedType?.let { type -> meals.filter { it.type == type } } ?: meals)
+                    .sortedBy { if (it.type == "중식") 0 else if (it.type == "석식") 1 else 2 }
                 if (selectedMeals.isEmpty()) "오늘 등록된 ${requestedType ?: "급식"} 정보가 없어요."
                 else selectedMeals.joinToString("\n\n") { "${it.type}: ${it.menu.joinToString(" · ")}\n${it.calories}" }
             }
-            "지금" in query || "현재" in query || "몇교시" in query -> when (val moment = SchoolTimeline.moment(now, lessons)) {
-                is SchoolMoment.InClass -> "지금은 ${moment.lesson.period}교시 ${moment.lesson.subject} 수업 중이에요. ${SchoolTimeline.clock(moment.lesson.endMinute)}에 끝나요."
+            requestedPeriod != null -> {
+                val lesson = lessons.firstOrNull { it.period == requestedPeriod }
+                lesson?.let {
+                    "오늘 ${it.period}교시는 ${it.subject}이고, ${SchoolTimeline.clock(it.startMinute)}부터 ${SchoolTimeline.clock(it.endMinute)}까지예요.${courseNote(it.subject)}"
+                } ?: "오늘은 ${requestedPeriod}교시가 없어요."
+            }            "지금" in query || "현재" in query || "몇교시" in query -> when (val moment = SchoolTimeline.moment(now, lessons)) {
+                is SchoolMoment.InClass -> "지금은 ${moment.lesson.period}교시 ${moment.lesson.subject} 수업 중이에요. ${SchoolTimeline.clock(moment.lesson.endMinute)}에 끝나요.${courseNote(moment.lesson.subject)}"
                 is SchoolMoment.BetweenClasses -> "지금은 쉬는 시간이에요. ${SchoolTimeline.clock(moment.next.startMinute)}에 ${moment.next.period}교시 ${moment.next.subject}이 시작해요."
                 is SchoolMoment.BeforeSchool -> "아직 수업 전이에요. ${SchoolTimeline.clock(moment.next.startMinute)}에 ${moment.next.subject} 수업이 시작해요."
                 is SchoolMoment.Finished -> "오늘 수업은 모두 끝났어요."
@@ -61,5 +86,9 @@ object SchoolAssistant {
             }
             else -> "현재 앱에 등록된 학교 데이터에서는 답을 찾지 못했어요."
         }
+    }
+    private fun courseNote(subject: String): String = when {
+        subject.startsWith("기상(") -> " ‘기상’은 ‘기하 성적 상승 비법’의 줄임말로, 수학 성적 향상을 위한 방학 수업이에요."
+        else -> ""
     }
 }

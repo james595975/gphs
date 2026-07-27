@@ -21,7 +21,7 @@
 2. Gemini API 공급자는 무료로 시작할 수 있는 **Gemini Developer API**를 선택합니다.
 3. 설정 완료 후 **Security > App Check > APIs**에서 **Firebase AI Logic**이 `Enforced`인지 확인합니다.
 
-Firebase 연결 후 앱의 AI 순서는 `Gemini Nano -> Firebase AI Logic -> 정확한 규칙형 답변`입니다. Firebase가 연결된 빌드에서는 기존 직접 API 키 호출로 우회하지 않습니다. 정상 확인 후 `local.properties`의 `GEMINI_API_KEY`는 삭제해도 됩니다.
+Firebase 연결 후 모든 생성형 AI 응답은 Firebase AI Logic의 Gemini를 사용합니다. 학교 정보는 앱이 확인한 사실만 전달하며, Firebase 연결 실패 시 학교 질문은 원문 사실을 그대로 표시합니다.
 
 ## 3. 로컬 디버그 App Check 등록
 

@@ -70,4 +70,5 @@ class SettingsRepository(private val context: Context) {
     suspend fun updateLocationMonitoring(enabled: Boolean) {
         context.settingsDataStore.edit { it[Keys.locationMonitoring] = enabled }
     }
+
 }
