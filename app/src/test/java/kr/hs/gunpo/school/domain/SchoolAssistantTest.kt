@@ -28,4 +28,10 @@ class SchoolAssistantTest {
         assertTrue(answer.contains("돼지국밥"))
         assertFalse(answer.contains("짜장밥"))
     }
+    @Test
+    fun shortNightStudyFollowUpKeepsSchoolContext() {
+        assertTrue(SchoolAssistant.isSchoolFollowUp("2차는?", "오늘 야자"))
+        assertFalse(SchoolAssistant.isSchoolFollowUp("안드로이드는?", "오늘 야자"))
+        assertFalse(SchoolAssistant.isSchoolFollowUp("2차는?", "안드로이드가 뭐야?"))
+    }
 }
