@@ -19,7 +19,6 @@
 - 네트워크 실패 시 마지막 NEIS 응답 및 내장 데이터 자동 폴백
 - AI 응답: Firebase AI Logic의 Gemini 사용(학교 데이터 질문은 확인된 앱 데이터만 근거로 답변)
 - 앱 아이콘 빠른 실행: 오늘 시간표, 오늘 급식, 학교 AI
-- SwiftUI 원본 기반 카드, 프로필 그라데이션, 빠른 메뉴, 7열 급식 달력, 공지 섹션 UI
 - API 33(Android 13) 이상 지원
 
 ## 실행
@@ -37,17 +36,3 @@ GEMINI_KEY=Your key
 
 NEIS 인증키는 Android 앱에 포함하지 않습니다. `CLOUDFLARE_SETUP.md`의 안내에 따라 Cloudflare Worker Secret의 `NEIS_API_KEY`로 등록합니다. 서버가 아직 배포되지 않은 개발 환경에서는 NEIS의 제한적인 무키 호출과 로컬 캐시로 자동 폴백합니다.
 
-## 검증 결과
-
-- Android Studio 내장 JDK 및 Android SDK API 37로 `assembleDebug` 성공
-- `SchoolTimelineTest` 3개 통과(실패 0)
-- 디버그 APK: `app/build/outputs/apk/debug/app-debug.apk`
-- 실제 SM-A566S(Android 16) 설치 및 5개 탭 스모크 테스트 완료
-- Android 16 실기기에서 학교 AI 딥링크와 추천 질문 답변 확인
-- Android 16 실기기에서 군포고 NEIS 동기화·캐시 생성·시간표 소스 표시 확인
-- 위젯/지오펜스/알림 Receiver 및 관련 권한 패키지 등록 확인
-
-## 다음 단계
-
-- Cloudflare Worker와 D1을 무료 계정에 배포
-- 이전 APK에 들어갔던 NEIS 키 폐기 후 Secret Manager에 새 키 등록
