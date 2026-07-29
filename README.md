@@ -32,6 +32,7 @@
 Firebase AI Logic을 구성하지 않은 개발 빌드에서만 직접 Gemini 키를 사용하려면 Git에서 제외되는 `local.properties`에 다음 값을 넣습니다.
 
 ```properties
+GEMINI_KEY=Your key
 ```
 
 NEIS 인증키는 Android 앱에 포함하지 않습니다. `CLOUDFLARE_SETUP.md`의 안내에 따라 Cloudflare Worker Secret의 `NEIS_API_KEY`로 등록합니다. 서버가 아직 배포되지 않은 개발 환경에서는 NEIS의 제한적인 무키 호출과 로컬 캐시로 자동 폴백합니다.
