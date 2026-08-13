@@ -22,6 +22,8 @@ data class NeisState(
     val errorMessage: String? = null,
     val grade: Int? = null,
     val classNumber: Int? = null,
+    val timetableSource: String? = null,
+    val temporaryTimetableDates: Set<LocalDate> = emptySet(),
 )
 
 class NeisRepository(private val context: Context) {
@@ -84,6 +86,7 @@ class NeisRepository(private val context: Context) {
                 isFromCache = mealCached || scheduleCached || timetableCached,
                 grade = settings.grade,
                 classNumber = settings.classNumber,
+                timetableSource = "neis",
             )
         } catch (error: Exception) {
             Log.e("NeisRepository", "NEIS synchronization failed", error)
@@ -115,6 +118,12 @@ class NeisRepository(private val context: Context) {
         val mealJson = result.optString("mealJson").takeIf { it.isNotBlank() } ?: return@runCatching null
         val scheduleJson = result.optString("scheduleJson").takeIf { it.isNotBlank() } ?: return@runCatching null
         val timetableJson = result.optString("timetableJson").takeIf { it.isNotBlank() } ?: return@runCatching null
+        val temporaryDates = buildSet {
+            val dates = result.optJSONObject("temporaryFallback")?.optJSONArray("dates") ?: JSONArray()
+            for (index in 0 until dates.length()) {
+                runCatching { LocalDate.parse(dates.getString(index)) }.getOrNull()?.let(::add)
+            }
+        }
         NeisState(
             meals = parseMeals(mealJson),
             events = parseEvents(scheduleJson),
@@ -122,6 +131,8 @@ class NeisRepository(private val context: Context) {
             isFromCache = result.optBoolean("cached"),
             grade = settings.grade,
             classNumber = settings.classNumber,
+            timetableSource = result.optString("timetableSource").takeIf { it.isNotBlank() },
+            temporaryTimetableDates = temporaryDates,
         )
     }.getOrNull()
 

@@ -15,6 +15,7 @@
 - 현재/다음 수업 Glance 홈 화면 위젯
 - 시간표·급식·현재 수업·8교시·야자를 답하는 오프라인 학교 AI
 - Cloudflare Worker 기반 NEIS 급식·연간 학사일정·학년/반별 시간표 동기화
+- NEIS 시간표가 없는 날짜는 D1의 2026학년도 2학기 임시 시간표로 보완하고, 공식 NEIS 등록 시 날짜 단위로 자동 교체
 - 서버의 시간당 공지 수집, 무료 D1 저장, 홈페이지 지문 불일치 시 즉시 재동기화
 - 네트워크 실패 시 마지막 NEIS 응답 및 내장 데이터 자동 폴백
 - AI 응답: Firebase AI Logic의 Gemini 사용(학교 데이터 질문은 확인된 앱 데이터만 근거로 답변)
@@ -35,4 +36,3 @@ GEMINI_KEY=Your key
 ```
 
 NEIS 인증키는 Android 앱에 포함하지 않습니다. `CLOUDFLARE_SETUP.md`의 안내에 따라 Cloudflare Worker Secret의 `NEIS_API_KEY`로 등록합니다. 서버가 아직 배포되지 않은 개발 환경에서는 NEIS의 제한적인 무키 호출과 로컬 캐시로 자동 폴백합니다.
-

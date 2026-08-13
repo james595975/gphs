@@ -5,6 +5,7 @@
 - 매시간 군포고 공지사항·가정통신문 수집
 - 매시간 현재 월 급식과 연간 학사일정 갱신
 - 앱 조회 시 학년·반별 시간표를 NEIS에서 실시간 갱신하고 D1에 저장
+- 공식 NEIS 시간표가 없는 날짜는 D1 임시 시간표를 사용하고, NEIS 등록 후에는 공식 데이터로 자동 교체
 - 매일 00:15(한국 시간)에 당월 조회 이력이 있는 학년·반 시간표 선갱신
 - 앱이 홈페이지 지문 차이를 발견하면 공지 즉시 재검사
 - NEIS 인증키를 암호화된 Worker Secret으로 보관
@@ -51,6 +52,17 @@ GET /v1/neis?grade=2&classNumber=4&year=2026&month=8&sync=true
 `sync=true`는 D1 캐시를 우회해 공식 NEIS를 즉시 조회하고, 성공한 응답을 D1에 저장합니다.
 공식 NEIS 장애 시에는 마지막 D1 저장 데이터를 `stale: true`로 반환합니다. `sync`를 생략하면
 기존처럼 30분 동안 캐시를 우선 사용합니다.
+
+응답의 `timetableSource`는 `neis`, `temporary`, `mixed`, `none` 중 하나이며,
+`temporaryFallback.dates`에는 임시 시간표가 적용된 날짜가 `YYYY-MM-DD` 형식으로 포함됩니다.
+현재 임시 시간표 원본은 `2026-2학기학반별임시시간표(2026.07.15).pdf`이고 D1에는
+1~3학년 1~10반의 주간 수업 890개가 2026-08-13부터 적용되도록 저장됩니다.
+
+원본 PDF가 바뀌면 다음 명령으로 마이그레이션 SQL을 다시 생성한 뒤 새 마이그레이션 번호로 추가합니다.
+
+```powershell
+node scripts/generate-temporary-timetable-sql.mjs <시간표.pdf> migrations/<새 번호>_temporary_timetable.sql
+```
 
 ## 4. Android 앱 연결
 

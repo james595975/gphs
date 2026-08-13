@@ -836,10 +836,16 @@ private fun TimetableScreen(settings: UserSettings, neisState: NeisState, now: L
     val selectedDate = monday.plusDays(selectedIndex.toLong())
     val lessons = effectiveLessons(selectedDate, settings, neisState)
     val isVacation = SchoolData.isVacation(selectedDate)
+    val isTemporaryTimetable = selectedDate in neisState.temporaryTimetableDates
     val current = if (selectedDate == today) (SchoolTimeline.moment(now, lessons) as? SchoolMoment.InClass)?.lesson?.period else null
+    val timetableBadge = when (neisState.timetableSource) {
+        "temporary" -> "임시"
+        "mixed" -> "NEIS·임시"
+        else -> if (neisState.timetableByDate.isNotEmpty()) "NEIS" else null
+    }
 
     Column(Modifier.fillMaxSize().padding(padding)) {
-        NavigationHeader("주간 시간표", badge = if (neisState.timetableByDate.isNotEmpty()) "NEIS" else null)
+        NavigationHeader("주간 시간표", badge = timetableBadge)
         LazyColumn(
             contentPadding = PaddingValues(horizontal = 18.dp, vertical = 18.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -850,12 +856,15 @@ private fun TimetableScreen(settings: UserSettings, neisState: NeisState, now: L
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                             Text(
-                                if (isVacation) "여름방학 ${SchoolData.days[selectedIndex].longName}" else "1학기 ${SchoolData.days[selectedIndex].longName}",
+                                if (isVacation) "여름방학 ${SchoolData.days[selectedIndex].longName}" else "${if (selectedDate.monthValue >= 8) 2 else 1}학기 ${SchoolData.days[selectedIndex].longName}",
                                 fontSize = 20.sp,
                                 fontWeight = FontWeight.Bold,
                             )
                             Text(
-                                if (isVacation) "70분 수업 · 선택 과목 및 강의실" else if (neisState.timetableByDate.containsKey(selectedDate)) "NEIS 시간표 · ${settings.grade}학년 ${settings.classNumber}반" else "저장된 시간표 · 7교시",
+                                if (isVacation) "70분 수업 · 선택 과목 및 강의실" else if (neisState.timetableByDate.containsKey(selectedDate)) {
+                                    val source = if (isTemporaryTimetable) "임시 시간표" else "NEIS 시간표"
+                                    "$source · ${settings.grade}학년 ${settings.classNumber}반"
+                                } else "저장된 시간표 · 7교시",
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontSize = 12.sp,
                             )
