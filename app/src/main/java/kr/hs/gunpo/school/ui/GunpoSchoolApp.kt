@@ -216,7 +216,6 @@ fun GunpoSchoolApp(viewModel: MainViewModel, startDestination: String? = null) {
         NetworkClock.synchronize()
         networkNow = NetworkClock.now()
         var loadedDate = networkNow.toLocalDate()
-        viewModel.loadNeisForMonth(loadedDate)
         var secondsUntilSync = 15 * 60
         while (true) {
             delay(1_000)

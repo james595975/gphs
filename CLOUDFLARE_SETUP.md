@@ -4,7 +4,8 @@
 
 - 매시간 군포고 공지사항·가정통신문 수집
 - 매시간 현재 월 급식과 연간 학사일정 갱신
-- 학년·반별 시간표 요청 시 조회하고 30분 캐시
+- 앱 조회 시 학년·반별 시간표를 NEIS에서 실시간 갱신하고 D1에 저장
+- 매일 00:15(한국 시간)에 당월 조회 이력이 있는 학년·반 시간표 선갱신
 - 앱이 홈페이지 지문 차이를 발견하면 공지 즉시 재검사
 - NEIS 인증키를 암호화된 Worker Secret으로 보관
 
@@ -40,6 +41,16 @@ pnpm run deploy
 ```text
 https://gunpo-school.<계정>.workers.dev/health
 ```
+
+앱과 같은 실시간 NEIS 조회 형식은 다음과 같습니다.
+
+```text
+GET /v1/neis?grade=2&classNumber=4&year=2026&month=8&sync=true
+```
+
+`sync=true`는 D1 캐시를 우회해 공식 NEIS를 즉시 조회하고, 성공한 응답을 D1에 저장합니다.
+공식 NEIS 장애 시에는 마지막 D1 저장 데이터를 `stale: true`로 반환합니다. `sync`를 생략하면
+기존처럼 30분 동안 캐시를 우선 사용합니다.
 
 ## 4. Android 앱 연결
 
