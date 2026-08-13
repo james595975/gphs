@@ -25,11 +25,14 @@ class SettingsRepository(private val context: Context) {
     }
 
     val settings: Flow<UserSettings> = context.settingsDataStore.data.map { prefs ->
+        val studentNumber = prefs[Keys.studentNumber].orEmpty()
+        val parsedStudentNumber = parseStudentNumber(studentNumber)
         UserSettings(
             studentName = prefs[Keys.studentName].orEmpty(),
-            studentNumber = prefs[Keys.studentNumber].orEmpty(),
-            grade = prefs[Keys.grade] ?: 2,
-            classNumber = prefs[Keys.classNumber] ?: 1,
+            studentNumber = studentNumber,
+            // 학년과 반은 학번에서 다시 계산해 과거에 잘못 저장된 설정도 자동 복구한다.
+            grade = parsedStudentNumber?.grade ?: prefs[Keys.grade] ?: 2,
+            classNumber = parsedStudentNumber?.classNumber ?: prefs[Keys.classNumber] ?: 1,
             nightStudyByDay = (1..5).associateWith { prefs[Keys.nightStudy(it)] ?: 0 },
             eighthPeriodByDay = (1..5).associateWith { day ->
                 prefs[Keys.eighthPeriod(day)]?.let { runCatching { EighthPeriodMode.valueOf(it) }.getOrNull() }
@@ -42,12 +45,13 @@ class SettingsRepository(private val context: Context) {
         )
     }
 
-    suspend fun updateProfile(name: String, number: String, grade: Int, classNumber: Int) {
+    suspend fun updateProfile(name: String, number: String) {
+        val studentNumber = requireNotNull(parseStudentNumber(number)) { "올바른 5자리 학번이 필요합니다." }
         context.settingsDataStore.edit {
             it[Keys.studentName] = name.trim()
-            it[Keys.studentNumber] = number.trim()
-            it[Keys.grade] = grade.coerceIn(1, 3)
-            it[Keys.classNumber] = classNumber.coerceIn(1, 20)
+            it[Keys.studentNumber] = studentNumber.value
+            it[Keys.grade] = studentNumber.grade
+            it[Keys.classNumber] = studentNumber.classNumber
         }
     }
 

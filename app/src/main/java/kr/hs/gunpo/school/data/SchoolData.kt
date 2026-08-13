@@ -29,6 +29,8 @@ object SchoolData {
                 Lesson(period, option.subject, range.first, range.second, option.room)
             }
         }
+        // 내장 정규 시간표는 2학년 1반 자료다. 다른 반에 이를 대신 표시하지 않는다.
+        if (settings.grade != 2 || settings.classNumber != 1) return emptyList()
         val day = days.firstOrNull { it.dayOfWeek == date.dayOfWeek.value } ?: return emptyList()
         val mode = settings.eighthPeriodByDay[day.dayOfWeek] ?: EighthPeriodMode.EMPTY
         return if (mode.subject == null) day.lessons else day.lessons + Lesson(8, mode.subject, 16 * 60 + 20, 17 * 60 + 10)

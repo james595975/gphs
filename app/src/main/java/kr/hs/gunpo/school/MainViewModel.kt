@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.time.LocalDate
@@ -43,21 +44,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     init {
         viewModelScope.launch { loadNotices() }
         viewModelScope.launch {
-            settings.map { it.grade to it.classNumber }.distinctUntilChanged().collectLatest {
-                loadNeis()
-            }
+            settings
+                .filter { it.isLoaded && it.isProfileConfigured }
+                .map { current -> Triple(current.grade, current.classNumber, current) }
+                .distinctUntilChanged { old, new -> old.first == new.first && old.second == new.second }
+                .collectLatest { (_, _, current) ->
+                    loadNeis(current)
+                }
         }
     }
 
-    fun refreshNeis() = viewModelScope.launch { loadNeis() }
+    fun refreshNeis() = viewModelScope.launch {
+        settings.value.takeIf { it.isLoaded && it.isProfileConfigured }?.let { loadNeis(it) }
+    }
 
-    fun loadNeisForMonth(date: LocalDate) = viewModelScope.launch { loadNeis(date) }
+    fun loadNeisForMonth(date: LocalDate) = viewModelScope.launch {
+        settings.value.takeIf { it.isLoaded && it.isProfileConfigured }?.let { loadNeis(it, date) }
+    }
 
     fun refreshNotices() = viewModelScope.launch { loadNotices(forceRefresh = true) }
 
-    private suspend fun loadNeis(date: LocalDate = LocalDate.now()) {
-        _neisState.value = _neisState.value.copy(isLoading = true, errorMessage = null)
-        _neisState.value = neisRepository.load(settings.value, date)
+    private suspend fun loadNeis(userSettings: UserSettings, date: LocalDate = LocalDate.now()) {
+        val previous = _neisState.value
+        _neisState.value = if (
+            previous.grade == userSettings.grade && previous.classNumber == userSettings.classNumber
+        ) {
+            previous.copy(isLoading = true, errorMessage = null)
+        } else {
+            // 다른 반으로 전환할 때 이전 반 시간표가 새 반의 시간표처럼 보이지 않게 한다.
+            NeisState(
+                isLoading = true,
+                grade = userSettings.grade,
+                classNumber = userSettings.classNumber,
+            )
+        }
+        val result = neisRepository.load(userSettings, date)
+        val latestSettings = settings.value
+        if (latestSettings.grade == userSettings.grade && latestSettings.classNumber == userSettings.classNumber) {
+            _neisState.value = result
+        }
     }
 
     private suspend fun loadNotices(forceRefresh: Boolean = false) {
@@ -65,8 +90,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _noticeState.value = noticeRepository.load(forceRefresh)
     }
 
-    fun updateProfile(name: String, number: String, grade: Int, classNumber: Int) = viewModelScope.launch {
-        repository.updateProfile(name, number, grade, classNumber)
+    fun updateProfile(name: String, number: String) = viewModelScope.launch {
+        repository.updateProfile(name, number)
     }
 
     fun updateNightStudy(day: Int, value: Int) = viewModelScope.launch {

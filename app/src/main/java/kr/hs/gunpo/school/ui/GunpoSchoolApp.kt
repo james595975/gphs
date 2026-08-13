@@ -133,6 +133,7 @@ import kr.hs.gunpo.school.data.Lesson
 import kr.hs.gunpo.school.data.Meal
 import kr.hs.gunpo.school.data.Notice
 import kr.hs.gunpo.school.data.NeisState
+import kr.hs.gunpo.school.data.parseStudentNumber
 import kr.hs.gunpo.school.data.NoticeState
 import kr.hs.gunpo.school.data.SchoolData
 import kr.hs.gunpo.school.data.UserSettings
@@ -192,6 +193,9 @@ private fun isHomeHighlight(event: AcademicEvent): Boolean =
 
 private fun effectiveLessons(date: LocalDate, settings: UserSettings, neisState: NeisState): List<Lesson> {
     if (SchoolData.isVacation(date)) return SchoolData.lessonsFor(date, settings)
+    if (neisState.grade != settings.grade || neisState.classNumber != settings.classNumber) {
+        return SchoolData.lessonsFor(date, settings)
+    }
     val remote = neisState.timetableByDate[date]
     if (remote != null) {
         val eighth = settings.eighthPeriodByDay[date.dayOfWeek.value]?.subject
@@ -1221,21 +1225,6 @@ private fun SettingsScreen(settings: UserSettings, neisState: NeisState, viewMod
     }
 }
 
-private data class ParsedStudentNumber(
-    val grade: Int,
-    val classNumber: Int,
-    val seatNumber: Int,
-)
-
-private fun parseStudentNumber(value: String): ParsedStudentNumber? {
-    if (value.length != 5 || value.any { !it.isDigit() }) return null
-    val grade = value.substring(0, 1).toInt()
-    val classNumber = value.substring(1, 3).toInt()
-    val seatNumber = value.substring(3, 5).toInt()
-    if (grade !in 1..3 || classNumber !in 1..20 || seatNumber !in 1..99) return null
-    return ParsedStudentNumber(grade, classNumber, seatNumber)
-}
-
 @Composable
 private fun ProfileSettings(
     settings: UserSettings,
@@ -1302,8 +1291,6 @@ private fun ProfileSettings(
                         viewModel.updateProfile(
                             name,
                             number,
-                            parsedStudentNumber!!.grade,
-                            parsedStudentNumber.classNumber,
                         )
                         if (isInitialSetup) onInitialSetupComplete?.invoke() else onBack?.invoke()
                     },
