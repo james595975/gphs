@@ -20,6 +20,8 @@ data class NeisState(
     val isLoading: Boolean = false,
     val isFromCache: Boolean = false,
     val errorMessage: String? = null,
+    val grade: Int? = null,
+    val classNumber: Int? = null,
 )
 
 class NeisRepository(private val context: Context) {
@@ -81,10 +83,16 @@ class NeisRepository(private val context: Context) {
                 events = parseEvents(scheduleJson),
                 timetableByDate = parseTimetable(timetableJson, settings),
                 isFromCache = mealCached || scheduleCached || timetableCached,
+                grade = settings.grade,
+                classNumber = settings.classNumber,
             )
         } catch (error: Exception) {
             Log.e("NeisRepository", "NEIS synchronization failed", error)
-            NeisState(errorMessage = error.message ?: "NEIS 데이터를 불러오지 못했습니다.")
+            NeisState(
+                errorMessage = error.message ?: "NEIS 데이터를 불러오지 못했습니다.",
+                grade = settings.grade,
+                classNumber = settings.classNumber,
+            )
         }
     }
 
@@ -113,6 +121,8 @@ class NeisRepository(private val context: Context) {
             events = parseEvents(scheduleJson),
             timetableByDate = parseTimetable(timetableJson, settings),
             isFromCache = result.optBoolean("cached"),
+            grade = settings.grade,
+            classNumber = settings.classNumber,
         )
     }.getOrNull()
 
@@ -204,6 +214,10 @@ class NeisRepository(private val context: Context) {
         val rows = rows(json, "hisTimetable")
         for (index in 0 until rows.length()) {
             val row = rows.getJSONObject(index)
+            val rowGrade = row.optString("GRADE").toIntOrNull()
+            val rowClassNumber = row.optString("CLASS_NM").toIntOrNull()
+            if (rowGrade != null && rowGrade != settings.grade) continue
+            if (rowClassNumber != null && rowClassNumber != settings.classNumber) continue
             val date = runCatching { LocalDate.parse(row.getString("ALL_TI_YMD"), DATE) }.getOrNull() ?: continue
             val period = row.optInt("PERIO")
             val subject = row.optString("ITRT_CNTNT").trim()
