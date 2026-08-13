@@ -29,7 +29,7 @@ object SchoolNoticeParser {
         baseUrl: String,
         section: String,
         category: String,
-        today: LocalDate = LocalDate.now(),
+        today: LocalDate,
     ): List<Notice> {
         val document = Jsoup.parse(html, baseUrl)
         return document.select("tr:has(a[href*=act=view])").mapNotNull { row ->
@@ -60,14 +60,14 @@ object SchoolNoticeParser {
 class SchoolNoticeRepository(context: Context) {
     private val preferences = context.getSharedPreferences("school_notice_cache", Context.MODE_PRIVATE)
 
-    suspend fun load(forceRefresh: Boolean = false): NoticeState = withContext(Dispatchers.IO) {
+    suspend fun load(forceRefresh: Boolean = false, today: LocalDate): NoticeState = withContext(Dispatchers.IO) {
         val cached = readCache()
         if (!forceRefresh && cached.isNotEmpty() && cacheIsFresh()) {
             return@withContext NoticeState(cached, isFromCache = true)
         }
 
         runCatching {
-            val websiteNotices = fetchWebsite()
+            val websiteNotices = fetchWebsite(today)
             val websiteFingerprint = fingerprint(websiteNotices)
             val server = readServerNotices()
             val result = when {
@@ -92,13 +92,13 @@ class SchoolNoticeRepository(context: Context) {
         )
     }
 
-    private fun fetchWebsite(): List<Notice> = sources.flatMap { source ->
+    private fun fetchWebsite(today: LocalDate): List<Notice> = sources.flatMap { source ->
         val html = Jsoup.connect(source.url)
             .userAgent("GunpoSchoolAndroid/0.1 (+https://www.gunpo.hs.kr/)")
             .timeout(15_000)
             .get()
             .outerHtml()
-        SchoolNoticeParser.parse(html, source.url, source.section, source.category)
+        SchoolNoticeParser.parse(html, source.url, source.section, source.category, today)
     }.distinctBy { it.url }.sortedByDescending { it.dateLabel }
 
     private fun readServerNotices(): Pair<String, List<Notice>>? = runCatching {
