@@ -27,6 +27,17 @@ type ContractDinner = {
   meal_type: string;
 };
 
+type TemporaryTimetableRow = {
+  academic_year: number;
+  semester: number;
+  day_of_week: number;
+  period: number;
+  subject: string;
+  effective_from: string;
+  effective_to: string;
+  source_name: string;
+};
+
 const OFFICE_CODE = "J10";
 const SCHOOL_CODE = "7530148";
 const NEIS_BASE_URL = "https://open.neis.go.kr/hub";
@@ -298,6 +309,118 @@ async function loadTimetable(
   }
 }
 
+function timetableRows(jsonText: string): Array<Record<string, unknown>> {
+  const root = JSON.parse(jsonText) as Record<string, unknown>;
+  const blocks = Array.isArray(root.hisTimetable)
+    ? root.hisTimetable as Array<Record<string, unknown>>
+    : [];
+  return blocks.flatMap((block) =>
+    Array.isArray(block.row) ? block.row as Array<Record<string, unknown>> : [],
+  );
+}
+
+async function mergeTemporaryTimetable(
+  env: Env,
+  timetableJson: string,
+  year: number,
+  month: number,
+  grade: number,
+  classNumber: number,
+): Promise<{
+  timetableJson: string;
+  source: "neis" | "temporary" | "mixed" | "none";
+  fallbackRowCount: number;
+  fallbackDates: string[];
+  sourceName: string | null;
+}> {
+  const monthStart = `${year}-${String(month).padStart(2, "0")}-01`;
+  const monthEnd = `${year}-${String(month).padStart(2, "0")}-${String(lastDay(year, month)).padStart(2, "0")}`;
+  const result = await env.DB.prepare(
+    `SELECT academic_year, semester, day_of_week, period, subject,
+            effective_from, effective_to, source_name
+     FROM temporary_timetable
+     WHERE grade = ?1 AND class_number = ?2
+       AND effective_from <= ?3 AND effective_to >= ?4
+     ORDER BY day_of_week, period`,
+  ).bind(grade, classNumber, monthEnd, monthStart).all<TemporaryTimetableRow>();
+
+  const officialRows = timetableRows(timetableJson);
+  if (result.results.length === 0) {
+    return {
+      timetableJson,
+      source: officialRows.length > 0 ? "neis" : "none",
+      fallbackRowCount: 0,
+      fallbackDates: [],
+      sourceName: null,
+    };
+  }
+
+  const officialDates = new Set(officialRows.map((row) => String(row.ALL_TI_YMD)));
+  const rulesByDay = new Map<number, TemporaryTimetableRow[]>();
+  result.results.forEach((row) => {
+    const rules = rulesByDay.get(row.day_of_week) || [];
+    rules.push(row);
+    rulesByDay.set(row.day_of_week, rules);
+  });
+  const fallbackRows: Array<Record<string, unknown>> = [];
+  const fallbackDates = new Set<string>();
+  const sourceName = result.results[0]?.source_name || null;
+
+  for (let day = 1; day <= lastDay(year, month); day++) {
+    const date = new Date(Date.UTC(year, month - 1, day));
+    const dayOfWeek = date.getUTCDay();
+    const rules = rulesByDay.get(dayOfWeek);
+    if (!rules) continue;
+    const isoDate = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    const ymdDate = isoDate.replaceAll("-", "");
+    if (officialDates.has(ymdDate)) continue;
+    rules.filter((rule) => isoDate >= rule.effective_from && isoDate <= rule.effective_to)
+      .forEach((rule) => {
+        fallbackDates.add(isoDate);
+        fallbackRows.push({
+          ATPT_OFCDC_SC_CODE: OFFICE_CODE,
+          SD_SCHUL_CODE: SCHOOL_CODE,
+          AY: String(rule.academic_year),
+          SEM: String(rule.semester),
+          GRADE: String(grade),
+          CLASS_NM: String(classNumber),
+          ALL_TI_YMD: ymdDate,
+          PERIO: String(rule.period),
+          ITRT_CNTNT: rule.subject,
+          TMPR_TI_YN: "Y",
+        });
+      });
+  }
+
+  if (fallbackRows.length === 0) {
+    return {
+      timetableJson,
+      source: officialRows.length > 0 ? "neis" : "none",
+      fallbackRowCount: 0,
+      fallbackDates: [],
+      sourceName,
+    };
+  }
+
+  const rows = [...officialRows, ...fallbackRows].sort((left, right) =>
+    String(left.ALL_TI_YMD).localeCompare(String(right.ALL_TI_YMD)) ||
+    Number(left.PERIO) - Number(right.PERIO)
+  );
+  const root = JSON.parse(timetableJson) as Record<string, unknown>;
+  root.hisTimetable = [
+    {head: [{list_total_count: rows.length}, {RESULT: {CODE: "INFO-000", MESSAGE: "정상 처리되었습니다."}}]},
+    {row: rows},
+  ];
+  delete root.RESULT;
+  return {
+    timetableJson: JSON.stringify(root),
+    source: officialRows.length > 0 ? "mixed" : "temporary",
+    fallbackRowCount: fallbackRows.length,
+    fallbackDates: [...fallbackDates].sort(),
+    sourceName,
+  };
+}
+
 async function refreshActiveTimetables(env: Env, year: number, month: number): Promise<number> {
   const result = await env.DB.prepare(
     "SELECT cache_key FROM data_cache WHERE cache_key LIKE 'neis_timetable_%'",
@@ -373,11 +496,25 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       loadTimetable(env, year, month, grade, classNumber, sync),
     ]);
     const mergedMeals = await mergeContractDinners(env, common.mealJson, year, month, grade);
+    const mergedTimetable = await mergeTemporaryTimetable(
+      env,
+      timetable.timetableJson,
+      year,
+      month,
+      grade,
+      classNumber,
+    );
     return json({
       mealJson: mergedMeals.mealJson,
       contractDinnerCount: mergedMeals.count,
       scheduleJson: common.scheduleJson,
-      timetableJson: timetable.timetableJson,
+      timetableJson: mergedTimetable.timetableJson,
+      timetableSource: mergedTimetable.source,
+      temporaryFallback: {
+        rowCount: mergedTimetable.fallbackRowCount,
+        dates: mergedTimetable.fallbackDates,
+        sourceName: mergedTimetable.sourceName,
+      },
       cached: common.cached || timetable.cached,
       syncMode: sync ? "realtime" : "cache-first",
       common: {cached: common.cached, stale: common.stale, updatedAt: common.updatedAt},
