@@ -71,7 +71,6 @@ class NeisRepository(private val context: Context) {
                 "hisTimetable",
                 mapOf(
                     "AY" to today.year.toString(),
-                    "SEM" to if (today.monthValue in 3..7) "1" else "2",
                     "GRADE" to settings.grade.toString(),
                     "CLASS_NM" to settings.classNumber.toString(),
                     "TI_FROM_YMD" to monthFrom.format(DATE),
@@ -97,7 +96,7 @@ class NeisRepository(private val context: Context) {
     }
 
     private fun loadFromServer(settings: UserSettings, today: LocalDate): NeisState? = runCatching {
-        val query = "grade=${settings.grade}&classNumber=${settings.classNumber}&year=${today.year}&month=${today.monthValue}"
+        val query = "grade=${settings.grade}&classNumber=${settings.classNumber}&year=${today.year}&month=${today.monthValue}&sync=true"
         val connection = URL("${BuildConfig.CLOUDFLARE_API_BASE_URL}/v1/neis?$query").openConnection() as HttpURLConnection
         val body = connection.run {
             requestMethod = "GET"

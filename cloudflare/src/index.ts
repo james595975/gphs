@@ -32,6 +32,8 @@ const SCHOOL_CODE = "7530148";
 const NEIS_BASE_URL = "https://open.neis.go.kr/hub";
 const CACHE_MS = 30 * 60 * 1000;
 const NOTICE_SYNC_COOLDOWN_MS = 60 * 1000;
+const HOURLY_SYNC_CRON = "0 * * * *";
+const DAILY_TIMETABLE_SYNC_CRON = "15 15 * * *"; // 매일 00:15 Asia/Seoul
 
 const noticeSources = [
   {
@@ -187,20 +189,25 @@ async function loadCommonNeis(env: Env, year: number, month: number, force = fal
   const key = `neis_common_${year}_${month}`;
   const cached = await getCache<{mealJson: string; scheduleJson: string}>(env, key);
   if (!force && cached && Date.now() - cached.updatedAt < CACHE_MS) {
-    return {...cached.value, cached: true};
+    return {...cached.value, cached: true, stale: false, updatedAt: cached.updatedAt};
   }
-  const [mealJson, scheduleJson] = await Promise.all([
-    requestNeis(env, "mealServiceDietInfo", {
-      MLSV_FROM_YMD: ymd(year, month, 1),
-      MLSV_TO_YMD: ymd(year, month, lastDay(year, month)),
-    }),
-    requestNeis(env, "SchoolSchedule", {
-      AA_FROM_YMD: ymd(year, 1, 1),
-      AA_TO_YMD: ymd(year, 12, 31),
-    }),
-  ]);
-  await putCache(env, key, {mealJson, scheduleJson});
-  return {mealJson, scheduleJson, cached: false};
+  try {
+    const [mealJson, scheduleJson] = await Promise.all([
+      requestNeis(env, "mealServiceDietInfo", {
+        MLSV_FROM_YMD: ymd(year, month, 1),
+        MLSV_TO_YMD: ymd(year, month, lastDay(year, month)),
+      }),
+      requestNeis(env, "SchoolSchedule", {
+        AA_FROM_YMD: ymd(year, 1, 1),
+        AA_TO_YMD: ymd(year, 12, 31),
+      }),
+    ]);
+    const updatedAt = await putCache(env, key, {mealJson, scheduleJson});
+    return {mealJson, scheduleJson, cached: false, stale: false, updatedAt};
+  } catch (error) {
+    if (!cached) throw error;
+    return {...cached.value, cached: true, stale: true, updatedAt: cached.updatedAt};
+  }
 }
 
 async function mergeContractDinners(
@@ -262,22 +269,51 @@ async function mergeContractDinners(
   return {mealJson: JSON.stringify(root), count: dinners.length};
 }
 
-async function loadTimetable(env: Env, year: number, month: number, grade: number, classNumber: number) {
+async function loadTimetable(
+  env: Env,
+  year: number,
+  month: number,
+  grade: number,
+  classNumber: number,
+  force = false,
+) {
   const key = `neis_timetable_${year}_${month}_${grade}_${classNumber}`;
   const cached = await getCache<{timetableJson: string}>(env, key);
-  if (cached && Date.now() - cached.updatedAt < CACHE_MS) {
-    return {...cached.value, cached: true};
+  if (!force && cached && Date.now() - cached.updatedAt < CACHE_MS) {
+    return {...cached.value, cached: true, stale: false, updatedAt: cached.updatedAt};
   }
-  const timetableJson = await requestNeis(env, "hisTimetable", {
-    AY: String(year),
-    SEM: month >= 3 && month <= 7 ? "1" : "2",
-    GRADE: String(grade),
-    CLASS_NM: String(classNumber),
-    TI_FROM_YMD: ymd(year, month, 1),
-    TI_TO_YMD: ymd(year, month, lastDay(year, month)),
-  });
-  await putCache(env, key, {timetableJson});
-  return {timetableJson, cached: false};
+  try {
+    const timetableJson = await requestNeis(env, "hisTimetable", {
+      AY: String(year),
+      GRADE: String(grade),
+      CLASS_NM: String(classNumber),
+      TI_FROM_YMD: ymd(year, month, 1),
+      TI_TO_YMD: ymd(year, month, lastDay(year, month)),
+    });
+    const updatedAt = await putCache(env, key, {timetableJson});
+    return {timetableJson, cached: false, stale: false, updatedAt};
+  } catch (error) {
+    if (!cached) throw error;
+    return {...cached.value, cached: true, stale: true, updatedAt: cached.updatedAt};
+  }
+}
+
+async function refreshActiveTimetables(env: Env, year: number, month: number): Promise<number> {
+  const result = await env.DB.prepare(
+    "SELECT cache_key FROM data_cache WHERE cache_key LIKE 'neis_timetable_%'",
+  ).all<{cache_key: string}>();
+  const activeClasses = result.results.map((row) => {
+    const match = row.cache_key.match(/^neis_timetable_(\d{4})_(\d{1,2})_(\d+)_(\d+)$/);
+    if (!match || Number(match[1]) !== year || Number(match[2]) !== month) return null;
+    return {grade: Number(match[3]), classNumber: Number(match[4])};
+  }).filter((value): value is {grade: number; classNumber: number} => value !== null);
+
+  for (let index = 0; index < activeClasses.length; index += 5) {
+    await Promise.all(activeClasses.slice(index, index + 5).map(({grade, classNumber}) =>
+      loadTimetable(env, year, month, grade, classNumber, true)
+    ));
+  }
+  return activeClasses.length;
 }
 
 function intParam(url: URL, name: string): number {
@@ -325,6 +361,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     const classNumber = intParam(url, "classNumber");
     const year = intParam(url, "year");
     const month = intParam(url, "month");
+    const sync = url.searchParams.get("sync") === "true";
     if (!Number.isInteger(grade) || grade < 1 || grade > 3 ||
         !Number.isInteger(classNumber) || classNumber < 1 || classNumber > 20 ||
         !Number.isInteger(year) || year < 2025 || year > 2100 ||
@@ -332,8 +369,8 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       return json({error: "학년, 반, 조회 연월이 올바르지 않습니다."}, 400);
     }
     const [common, timetable] = await Promise.all([
-      loadCommonNeis(env, year, month),
-      loadTimetable(env, year, month, grade, classNumber),
+      loadCommonNeis(env, year, month, sync),
+      loadTimetable(env, year, month, grade, classNumber, sync),
     ]);
     const mergedMeals = await mergeContractDinners(env, common.mealJson, year, month, grade);
     return json({
@@ -342,6 +379,9 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       scheduleJson: common.scheduleJson,
       timetableJson: timetable.timetableJson,
       cached: common.cached || timetable.cached,
+      syncMode: sync ? "realtime" : "cache-first",
+      common: {cached: common.cached, stale: common.stale, updatedAt: common.updatedAt},
+      timetable: {cached: timetable.cached, stale: timetable.stale, updatedAt: timetable.updatedAt},
     });
   }
 
@@ -358,10 +398,14 @@ export default {
     }
   },
 
-  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil((async () => {
       const {year, month} = seoulDateParts();
-      await Promise.all([refreshNotices(env), loadCommonNeis(env, year, month, true)]);
+      if (controller.cron === DAILY_TIMETABLE_SYNC_CRON) {
+        await refreshActiveTimetables(env, year, month);
+      } else if (controller.cron === HOURLY_SYNC_CRON) {
+        await Promise.all([refreshNotices(env), loadCommonNeis(env, year, month, true)]);
+      }
     })());
   },
 } satisfies ExportedHandler<Env>;
