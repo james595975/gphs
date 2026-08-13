@@ -230,7 +230,12 @@ class NeisRepository(private val context: Context) {
             if (rowClassNumber != null && rowClassNumber != settings.classNumber) continue
             val date = runCatching { LocalDate.parse(row.getString("ALL_TI_YMD"), DATE) }.getOrNull() ?: continue
             val period = row.optInt("PERIO")
-            val subject = row.optString("ITRT_CNTNT").trim()
+            val subject = TimetableSubjectFormatter.display(
+                subject = row.optString("ITRT_CNTNT").trim(),
+                grade = rowGrade ?: settings.grade,
+                date = date,
+                period = period,
+            )
             if (period !in 1..starts.size || subject.isBlank()) continue
             val start = starts[period - 1]
             byDate.getOrPut(date) { mutableListOf() } += Lesson(period, subject, start, start + 50, "${settings.grade}학년 ${settings.classNumber}반")

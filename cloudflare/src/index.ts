@@ -319,6 +319,37 @@ function timetableRows(jsonText: string): Array<Record<string, unknown>> {
   );
 }
 
+const SECOND_GRADE_ELECTIVE_BLOCKS: Record<string, string> = {
+  "1-3": "2A", "3-2": "2A", "4-5": "2A",
+  "2-2": "2B", "3-3": "2B", "4-6": "2B",
+  "1-4": "2C", "2-5": "2C", "5-3": "2C",
+  "2-6": "2D", "4-1": "2D", "5-4": "2D",
+  "5-5": "2E", "5-6": "2E",
+  "1-2": "2F", "2-7": "2F", "3-1": "2F",
+};
+
+function preserveElectiveBlockLabels(timetableJson: string): string {
+  const root = JSON.parse(timetableJson) as Record<string, unknown>;
+  const blocks = Array.isArray(root.hisTimetable)
+    ? root.hisTimetable as Array<Record<string, unknown>>
+    : [];
+  const rows = blocks.flatMap((block) =>
+    Array.isArray(block.row) ? block.row as Array<Record<string, unknown>> : [],
+  );
+  rows.forEach((row) => {
+    const dateText = String(row.ALL_TI_YMD);
+    if (String(row.GRADE) !== "2" || dateText < "20260813" || dateText > "20270228") return;
+    const date = new Date(Date.UTC(
+      Number(dateText.slice(0, 4)),
+      Number(dateText.slice(4, 6)) - 1,
+      Number(dateText.slice(6, 8)),
+    ));
+    const label = SECOND_GRADE_ELECTIVE_BLOCKS[`${date.getUTCDay()}-${Number(row.PERIO)}`];
+    if (label) row.ITRT_CNTNT = label;
+  });
+  return JSON.stringify(root);
+}
+
 async function mergeTemporaryTimetable(
   env: Env,
   timetableJson: string,
@@ -508,7 +539,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       mealJson: mergedMeals.mealJson,
       contractDinnerCount: mergedMeals.count,
       scheduleJson: common.scheduleJson,
-      timetableJson: mergedTimetable.timetableJson,
+      timetableJson: preserveElectiveBlockLabels(mergedTimetable.timetableJson),
       timetableSource: mergedTimetable.source,
       temporaryFallback: {
         rowCount: mergedTimetable.fallbackRowCount,
