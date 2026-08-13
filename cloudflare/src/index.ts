@@ -292,6 +292,16 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     return json({ok: true, service: "gunpo-school"});
   }
 
+  if (request.method === "GET" && url.pathname === "/v1/time") {
+    const now = new Date();
+    const seoul = seoulDateParts(now);
+    return json({
+      epochMillis: now.getTime(),
+      timeZone: "Asia/Seoul",
+      date: `${seoul.year}-${String(seoul.month).padStart(2, "0")}-${String(seoul.day).padStart(2, "0")}`,
+    });
+  }
+
   if (request.method === "GET" && url.pathname === "/v1/notices") {
     const cached = await getCache<Notice[]>(env, "notices") || await refreshNotices(env);
     return json({items: cached.value, fingerprint: cached.fingerprint, updatedAt: cached.updatedAt});

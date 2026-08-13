@@ -33,7 +33,7 @@ class NeisRepository(private val context: Context) {
         private val DATE = DateTimeFormatter.BASIC_ISO_DATE
     }
 
-    suspend fun load(settings: UserSettings, today: LocalDate = LocalDate.now()): NeisState = withContext(Dispatchers.IO) {
+    suspend fun load(settings: UserSettings, today: LocalDate): NeisState = withContext(Dispatchers.IO) {
         val monthFrom = today.withDayOfMonth(1)
         val monthTo = monthFrom.plusMonths(1).withDayOfMonth(monthFrom.plusMonths(1).lengthOfMonth())
         val yearFrom = LocalDate.of(today.year, 1, 1)

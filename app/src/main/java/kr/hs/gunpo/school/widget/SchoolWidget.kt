@@ -30,13 +30,14 @@ import kr.hs.gunpo.school.data.SchoolData
 import kr.hs.gunpo.school.data.SettingsRepository
 import kr.hs.gunpo.school.domain.SchoolMoment
 import kr.hs.gunpo.school.domain.SchoolTimeline
+import kr.hs.gunpo.school.domain.NetworkClock
 import kotlinx.coroutines.flow.first
-import java.time.LocalDateTime
 
 class SchoolWidget : GlanceAppWidget() {
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val settings = SettingsRepository(context).settings.first()
-        val now = LocalDateTime.now()
+        NetworkClock.synchronize()
+        val now = NetworkClock.now()
         val moment = SchoolTimeline.moment(now, SchoolData.lessonsFor(now.toLocalDate(), settings))
         provideContent { WidgetContent(settings.className, moment) }
     }

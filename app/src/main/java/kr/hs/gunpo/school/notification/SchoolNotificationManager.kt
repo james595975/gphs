@@ -17,6 +17,7 @@ import kr.hs.gunpo.school.data.SchoolData
 import kr.hs.gunpo.school.data.SettingsRepository
 import kr.hs.gunpo.school.domain.SchoolMoment
 import kr.hs.gunpo.school.domain.SchoolTimeline
+import kr.hs.gunpo.school.domain.NetworkClock
 import kr.hs.gunpo.school.widget.SchoolWidget
 import kr.hs.gunpo.school.location.SchoolGeofenceManager
 import kotlinx.coroutines.CoroutineScope
@@ -35,7 +36,8 @@ object SchoolNotificationManager {
         val settings = SettingsRepository(context).settings.first()
         if (!settings.liveUpdatesEnabled) return stop(context)
         createChannel(context)
-        val now = LocalDateTime.now()
+        NetworkClock.synchronize()
+        val now = NetworkClock.now()
         val lessons = SchoolData.lessonsFor(now.toLocalDate(), settings)
         val moment = SchoolTimeline.moment(now, lessons)
         val (title, text) = notificationText(moment)
@@ -88,7 +90,7 @@ object SchoolNotificationManager {
         } else {
             now.toLocalDate().plusDays(1).atTime(7, 30)
         }
-        val millis = next.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        val millis = next.atZone(ZoneId.of("Asia/Seoul")).toInstant().toEpochMilli()
         context.getSystemService(AlarmManager::class.java).setAndAllowWhileIdle(
             AlarmManager.RTC_WAKEUP,
             millis,

@@ -211,6 +211,29 @@ fun GunpoSchoolApp(viewModel: MainViewModel, startDestination: String? = null) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val neisState by viewModel.neisState.collectAsStateWithLifecycle()
     val noticeState by viewModel.noticeState.collectAsStateWithLifecycle()
+    var networkNow by remember { mutableStateOf(NetworkClock.now()) }
+    LaunchedEffect(Unit) {
+        NetworkClock.synchronize()
+        networkNow = NetworkClock.now()
+        var loadedDate = networkNow.toLocalDate()
+        viewModel.loadNeisForMonth(loadedDate)
+        var secondsUntilSync = 15 * 60
+        while (true) {
+            delay(1_000)
+            networkNow = NetworkClock.now()
+            val currentDate = networkNow.toLocalDate()
+            if (currentDate != loadedDate) {
+                loadedDate = currentDate
+                viewModel.loadNeisForMonth(currentDate)
+            }
+            secondsUntilSync--
+            if (secondsUntilSync <= 0) {
+                NetworkClock.synchronize()
+                networkNow = NetworkClock.now()
+                secondsUntilSync = 15 * 60
+            }
+        }
+    }
     val context = LocalContext.current
     var showAlwaysLocationGuide by remember { mutableStateOf(false) }
     val foregroundLocationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
@@ -322,9 +345,9 @@ fun GunpoSchoolApp(viewModel: MainViewModel, startDestination: String? = null) {
         },
     ) { innerPadding ->
         when (selectedTab) {
-            MainTab.HOME -> HomeScreen(settings, neisState, noticeState, innerPadding, openAssistant, homeSelectionVersion) { selectedTab = it }
-            MainTab.TIMETABLE -> TimetableScreen(settings, neisState, innerPadding)
-            MainTab.MEAL -> MealScreen(settings, neisState, innerPadding, viewModel::loadNeisForMonth)
+            MainTab.HOME -> HomeScreen(settings, neisState, noticeState, networkNow, innerPadding, openAssistant, homeSelectionVersion) { selectedTab = it }
+            MainTab.TIMETABLE -> TimetableScreen(settings, neisState, networkNow, innerPadding)
+            MainTab.MEAL -> MealScreen(settings, neisState, networkNow.toLocalDate(), innerPadding, viewModel::loadNeisForMonth)
             MainTab.NOTICE -> NoticeScreen(noticeState, viewModel::refreshNotices, innerPadding)
             MainTab.SETTINGS -> SettingsScreen(settings, neisState, viewModel, innerPadding)
         }
@@ -349,8 +372,7 @@ private fun NavigationHeader(
 }
 
 @Composable
-private fun HomeScreen(settings: UserSettings, neisState: NeisState, noticeState: NoticeState, padding: PaddingValues, openChatInitially: Boolean = false, homeSelectionVersion: Int = 0, selectTab: (MainTab) -> Unit) {
-    var now by remember { mutableStateOf(NetworkClock.now()) }
+private fun HomeScreen(settings: UserSettings, neisState: NeisState, noticeState: NoticeState, now: LocalDateTime, padding: PaddingValues, openChatInitially: Boolean = false, homeSelectionVersion: Int = 0, selectTab: (MainTab) -> Unit) {
     var showChat by remember(openChatInitially) { mutableStateOf(openChatInitially) }
     var showAllEvents by remember { mutableStateOf(false) }
     var showClassAlign by remember { mutableStateOf(false) }
@@ -359,19 +381,6 @@ private fun HomeScreen(settings: UserSettings, neisState: NeisState, noticeState
             showChat = false
             showAllEvents = false
             showClassAlign = false
-        }
-    }
-    LaunchedEffect(Unit) {
-        NetworkClock.synchronize()
-        var secondsUntilSync = 15 * 60
-        while (true) {
-            now = NetworkClock.now()
-            delay(1_000)
-            secondsUntilSync--
-            if (secondsUntilSync <= 0) {
-                NetworkClock.synchronize()
-                secondsUntilSync = 15 * 60
-            }
         }
     }
     BackHandler(enabled = showChat || showAllEvents || showClassAlign) {
@@ -386,7 +395,7 @@ private fun HomeScreen(settings: UserSettings, neisState: NeisState, noticeState
         return
     }
     if (showAllEvents) {
-        AcademicEventsScreen(settings, neisState, padding) { showAllEvents = false }
+        AcademicEventsScreen(settings, neisState, now.toLocalDate(), padding) { showAllEvents = false }
         return
     }
     if (showClassAlign) {
@@ -460,7 +469,7 @@ private fun SchoolAssistantScreen(settings: UserSettings, neisState: NeisState, 
         input = ""
         isAnswering = true
         scope.launch {
-            val now = LocalDateTime.now()
+            val now = NetworkClock.now()
             val factual = SchoolAssistant.answer(text, now, settings, effectiveLessons(now.toLocalDate(), settings, neisState), effectiveMeals(neisState).filter { it.date == now.toLocalDate() })
             val result = HybridSchoolAssistant.answer(text, factual, SchoolAssistant.isSchoolQuestion(text), history)
             messages[answerIndex] = ChatMessage("", false)
@@ -686,8 +695,7 @@ private fun UpcomingEventsCard(events: List<AcademicEvent>, onAll: () -> Unit) {
 }
 
 @Composable
-private fun AcademicEventsScreen(settings: UserSettings, neisState: NeisState, padding: PaddingValues, onBack: () -> Unit) {
-    val today = LocalDate.now()
+private fun AcademicEventsScreen(settings: UserSettings, neisState: NeisState, today: LocalDate, padding: PaddingValues, onBack: () -> Unit) {
     val allEvents = effectiveEvents(settings, neisState).sortedBy { it.start }
     val events = allEvents.filter { !it.end.isBefore(today) }.groupBy { it.start.monthValue }
     Column(Modifier.fillMaxSize().padding(padding)) {
@@ -821,14 +829,15 @@ private fun RecentNoticesCard(notices: List<Notice>, onAll: () -> Unit) {
 }
 
 @Composable
-private fun TimetableScreen(settings: UserSettings, neisState: NeisState, padding: PaddingValues) {
-    val todayIndex = (LocalDate.now().dayOfWeek.value - 1).coerceIn(0, 4)
-    var selectedIndex by remember { mutableIntStateOf(todayIndex) }
-    val monday = LocalDate.now().with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+private fun TimetableScreen(settings: UserSettings, neisState: NeisState, now: LocalDateTime, padding: PaddingValues) {
+    val today = now.toLocalDate()
+    val todayIndex = (today.dayOfWeek.value - 1).coerceIn(0, 4)
+    var selectedIndex by remember(today) { mutableIntStateOf(todayIndex) }
+    val monday = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
     val selectedDate = monday.plusDays(selectedIndex.toLong())
     val lessons = effectiveLessons(selectedDate, settings, neisState)
     val isVacation = SchoolData.isVacation(selectedDate)
-    val current = if (selectedDate == LocalDate.now()) (SchoolTimeline.moment(LocalDateTime.now(), lessons) as? SchoolMoment.InClass)?.lesson?.period else null
+    val current = if (selectedDate == today) (SchoolTimeline.moment(now, lessons) as? SchoolMoment.InClass)?.lesson?.period else null
 
     Column(Modifier.fillMaxSize().padding(padding)) {
         NavigationHeader("주간 시간표", badge = if (neisState.timetableByDate.isNotEmpty()) "NEIS" else null)
@@ -909,11 +918,10 @@ private fun LessonLine(lesson: Lesson, isCurrent: Boolean) {
 }
 
 @Composable
-private fun MealScreen(settings: UserSettings, neisState: NeisState, padding: PaddingValues, loadMonth: (LocalDate) -> Unit) {
+private fun MealScreen(settings: UserSettings, neisState: NeisState, today: LocalDate, padding: PaddingValues, loadMonth: (LocalDate) -> Unit) {
     val meals = effectiveMeals(neisState)
-    val today = LocalDate.now()
-    var selected by remember { mutableStateOf(today) }
-    var displayedMonth by remember { mutableStateOf(YearMonth.from(today)) }
+    var selected by remember(today) { mutableStateOf(today) }
+    var displayedMonth by remember(today) { mutableStateOf(YearMonth.from(today)) }
     val calendarDates = remember(displayedMonth) {
         val first = displayedMonth.atDay(1)
         val start = first.minusDays((first.dayOfWeek.value % 7).toLong())
@@ -963,7 +971,7 @@ private fun MealScreen(settings: UserSettings, neisState: NeisState, padding: Pa
                     Spacer(Modifier.height(12.dp))
                     val selectedEvent = effectiveEvents(settings, neisState).firstOrNull { selected in it.start..it.end }
                     listOf("중식", "석식").forEachIndexed { index, type ->
-                        selectedMeals[type]?.let { MealBlock(it) } ?: UnavailableMealBlock(type, selected, selectedEvent)
+                        selectedMeals[type]?.let { MealBlock(it) } ?: UnavailableMealBlock(type, selected, selectedEvent, today)
                         if (index == 0) HorizontalDivider(Modifier.padding(vertical = 10.dp))
                     }
                 }
@@ -1009,12 +1017,12 @@ private fun CalendarGrid(dates: List<LocalDate>, displayedMonth: YearMonth, sele
 }
 
 @Composable
-private fun UnavailableMealBlock(type: String, date: LocalDate, event: AcademicEvent?) {
+private fun UnavailableMealBlock(type: String, date: LocalDate, event: AcademicEvent?, today: LocalDate) {
     val color = if (type == "석식") SchoolOrange else SchoolGreen
     val isWeekday = date.dayOfWeek !in setOf(DayOfWeek.SATURDAY, DayOfWeek.SUNDAY)
-    val pendingMealInfoStart = LocalDate.of(LocalDate.now().year, 8, 13)
-    val isPendingMealInfo = date.year == LocalDate.now().year &&
-        !date.isBefore(pendingMealInfoStart) && date.isAfter(LocalDate.now())
+    val pendingMealInfoStart = LocalDate.of(today.year, 8, 13)
+    val isPendingMealInfo = date.year == today.year &&
+        !date.isBefore(pendingMealInfoStart) && date.isAfter(today)
     val reason = when {
         isWeekday && isPendingMealInfo && type == "중식" -> "중식은 아직 NEIS 정보가 없습니다."
         isWeekday && isPendingMealInfo && type == "석식" -> "석식은 아직 식단표가 나오지 않았습니다."

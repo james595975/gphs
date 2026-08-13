@@ -12,6 +12,7 @@ import kr.hs.gunpo.school.data.NoticeState
 import kr.hs.gunpo.school.data.SchoolNoticeRepository
 import kr.hs.gunpo.school.notification.SchoolNotificationManager
 import kr.hs.gunpo.school.location.SchoolGeofenceManager
+import kr.hs.gunpo.school.domain.NetworkClock
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -42,8 +43,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val noticeState: StateFlow<NoticeState> = _noticeState.asStateFlow()
 
     init {
-        viewModelScope.launch { loadNotices() }
         viewModelScope.launch {
+            NetworkClock.synchronize()
+            loadNotices()
+        }
+        viewModelScope.launch {
+            NetworkClock.synchronize()
             settings
                 .filter { it.isLoaded && it.isProfileConfigured }
                 .map { current -> Triple(current.grade, current.classNumber, current) }
@@ -64,7 +69,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshNotices() = viewModelScope.launch { loadNotices(forceRefresh = true) }
 
-    private suspend fun loadNeis(userSettings: UserSettings, date: LocalDate = LocalDate.now()) {
+    private suspend fun loadNeis(userSettings: UserSettings, date: LocalDate = NetworkClock.now().toLocalDate()) {
         val previous = _neisState.value
         _neisState.value = if (
             previous.grade == userSettings.grade && previous.classNumber == userSettings.classNumber
@@ -87,7 +92,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private suspend fun loadNotices(forceRefresh: Boolean = false) {
         _noticeState.value = _noticeState.value.copy(isLoading = true, errorMessage = null)
-        _noticeState.value = noticeRepository.load(forceRefresh)
+        _noticeState.value = noticeRepository.load(forceRefresh, NetworkClock.now().toLocalDate())
     }
 
     fun updateProfile(name: String, number: String) = viewModelScope.launch {
