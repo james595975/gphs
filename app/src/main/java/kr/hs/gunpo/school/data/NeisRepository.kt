@@ -233,6 +233,7 @@ class NeisRepository(private val context: Context) {
             val subject = TimetableSubjectFormatter.display(
                 subject = row.optString("ITRT_CNTNT").trim(),
                 grade = rowGrade ?: settings.grade,
+                classNumber = rowClassNumber ?: settings.classNumber,
                 date = date,
                 period = period,
             )

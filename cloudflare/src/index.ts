@@ -345,7 +345,8 @@ function preserveElectiveBlockLabels(timetableJson: string): string {
       Number(dateText.slice(6, 8)),
     ));
     const label = SECOND_GRADE_ELECTIVE_BLOCKS[`${date.getUTCDay()}-${Number(row.PERIO)}`];
-    if (label) row.ITRT_CNTNT = label;
+    const keepsActualSubject = String(row.CLASS_NM) === "4" && (label === "2E" || label === "2F");
+    if (label && !keepsActualSubject) row.ITRT_CNTNT = label;
   });
   return JSON.stringify(root);
 }
