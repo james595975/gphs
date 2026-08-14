@@ -13,8 +13,9 @@ object TimetableSubjectFormatter {
         (1 to 2) to "2F", (2 to 7) to "2F", (3 to 1) to "2F",
     )
 
-    fun display(subject: String, grade: Int, date: LocalDate, period: Int): String {
+    fun display(subject: String, grade: Int, classNumber: Int, date: LocalDate, period: Int): String {
         if (grade != 2 || date !in secondGradeSemesterTwo) return subject
-        return electiveBlocks[date.dayOfWeek.value to period] ?: subject
+        val label = electiveBlocks[date.dayOfWeek.value to period] ?: return subject
+        return if (classNumber == 4 && label in setOf("2E", "2F")) subject else label
     }
 }
