@@ -345,7 +345,7 @@ fun GunpoSchoolApp(viewModel: MainViewModel, startDestination: String? = null) {
     ) { innerPadding ->
         when (selectedTab) {
             MainTab.HOME -> HomeScreen(settings, neisState, noticeState, networkNow, innerPadding, openAssistant, homeSelectionVersion) { selectedTab = it }
-            MainTab.TIMETABLE -> TimetableScreen(settings, neisState, networkNow, innerPadding)
+            MainTab.TIMETABLE -> TimetableScreen(settings, neisState, networkNow, innerPadding, viewModel::loadNeisForWeek)
             MainTab.MEAL -> MealScreen(settings, neisState, networkNow.toLocalDate(), innerPadding, viewModel::loadNeisForMonth)
             MainTab.NOTICE -> NoticeScreen(noticeState, viewModel::refreshNotices, innerPadding)
             MainTab.SETTINGS -> SettingsScreen(settings, neisState, viewModel, innerPadding)
@@ -828,21 +828,32 @@ private fun RecentNoticesCard(notices: List<Notice>, onAll: () -> Unit) {
 }
 
 @Composable
-private fun TimetableScreen(settings: UserSettings, neisState: NeisState, now: LocalDateTime, padding: PaddingValues) {
+private fun TimetableScreen(
+    settings: UserSettings,
+    neisState: NeisState,
+    now: LocalDateTime,
+    padding: PaddingValues,
+    loadWeek: (LocalDate) -> Unit,
+) {
     val today = now.toLocalDate()
     val todayIndex = (today.dayOfWeek.value - 1).coerceIn(0, 4)
     var selectedIndex by remember(today) { mutableIntStateOf(todayIndex) }
-    val monday = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+    var weekOffset by remember(today) { mutableIntStateOf(0) }
+    val currentMonday = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+    val monday = currentMonday.plusWeeks(weekOffset.toLong())
+    val friday = monday.plusDays(4)
     val selectedDate = monday.plusDays(selectedIndex.toLong())
     val lessons = effectiveLessons(selectedDate, settings, neisState)
     val isVacation = SchoolData.isVacation(selectedDate)
     val isTemporaryTimetable = selectedDate in neisState.temporaryTimetableDates
+    val selectedEvent = effectiveEvents(settings, neisState).firstOrNull { selectedDate in it.start..it.end }
     val current = if (selectedDate == today) (SchoolTimeline.moment(now, lessons) as? SchoolMoment.InClass)?.lesson?.period else null
     val timetableBadge = when (neisState.timetableSource) {
         "temporary" -> "임시"
         "mixed" -> "NEIS·임시"
         else -> if (neisState.timetableByDate.isNotEmpty()) "NEIS" else null
     }
+    LaunchedEffect(monday) { loadWeek(monday) }
 
     Column(Modifier.fillMaxSize().padding(padding)) {
         NavigationHeader("주간 시간표", badge = timetableBadge)
@@ -850,13 +861,40 @@ private fun TimetableScreen(settings: UserSettings, neisState: NeisState, now: L
             contentPadding = PaddingValues(horizontal = 18.dp, vertical = 18.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
+            item {
+                SchoolCard(contentPadding = PaddingValues(horizontal = 8.dp, vertical = 7.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { weekOffset-- }) {
+                            Icon(Icons.Default.ChevronLeft, "이전 주")
+                        }
+                        Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                "${monday.format(DateTimeFormatter.ofPattern("M월 d일"))} – ${friday.format(DateTimeFormatter.ofPattern("M월 d일"))}",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            if (weekOffset == 0) {
+                                Text("이번 주", color = SchoolBlue, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            } else {
+                                TextButton(onClick = { weekOffset = 0 }, contentPadding = PaddingValues(0.dp)) {
+                                    Text("이번 주로 이동", color = SchoolBlue, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                        IconButton(onClick = { weekOffset++ }) {
+                            Icon(Icons.Default.ChevronRight, "다음 주")
+                        }
+                    }
+                    if (neisState.isLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+            }
             item { SegmentedDays(selectedIndex) { selectedIndex = it } }
             item {
                 SchoolCard {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                             Text(
-                                if (isVacation) "여름방학 ${SchoolData.days[selectedIndex].longName}" else "${if (selectedDate.monthValue >= 8) 2 else 1}학기 ${SchoolData.days[selectedIndex].longName}",
+                                if (isVacation) "여름방학 ${SchoolData.days[selectedIndex].longName}" else "${if (selectedDate.monthValue >= 8) 2 else 1}학기 ${SchoolData.days[selectedIndex].longName} · ${selectedDate.format(DateTimeFormatter.ofPattern("M월 d일"))}",
                                 fontSize = 20.sp,
                                 fontWeight = FontWeight.Bold,
                             )
@@ -875,8 +913,16 @@ private fun TimetableScreen(settings: UserSettings, neisState: NeisState, now: L
                     if (lessons.isEmpty()) {
                         Column(Modifier.fillMaxWidth().padding(vertical = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                             Icon(Icons.Default.Flag, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text("제헌절", fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 7.dp))
-                            Text("여름방학이 시작됩니다.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                            Text(selectedEvent?.title ?: "수업 정보 없음", fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 7.dp))
+                            Text(
+                                when {
+                                    neisState.isLoading -> "시간표를 불러오는 중입니다."
+                                    selectedEvent != null -> "${selectedEvent.scope} 학사일정입니다."
+                                    else -> "이 날짜에 등록된 수업이 없습니다."
+                                },
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 13.sp,
+                            )
                         }
                     } else lessons.forEachIndexed { index, lesson ->
                         LessonLine(lesson, current == lesson.period)

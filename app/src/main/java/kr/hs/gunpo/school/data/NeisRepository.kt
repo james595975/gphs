@@ -11,6 +11,7 @@ import java.net.HttpURLConnection
 import java.net.URLEncoder
 import java.net.URL
 import java.time.LocalDate
+import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 
 data class NeisState(
@@ -24,6 +25,7 @@ data class NeisState(
     val classNumber: Int? = null,
     val timetableSource: String? = null,
     val temporaryTimetableDates: Set<LocalDate> = emptySet(),
+    val loadedMonths: Set<YearMonth> = emptySet(),
 )
 
 class NeisRepository(private val context: Context) {
@@ -87,6 +89,7 @@ class NeisRepository(private val context: Context) {
                 grade = settings.grade,
                 classNumber = settings.classNumber,
                 timetableSource = "neis",
+                loadedMonths = setOf(YearMonth.from(today)),
             )
         } catch (error: Exception) {
             Log.e("NeisRepository", "NEIS synchronization failed", error)
@@ -133,6 +136,7 @@ class NeisRepository(private val context: Context) {
             classNumber = settings.classNumber,
             timetableSource = result.optString("timetableSource").takeIf { it.isNotBlank() },
             temporaryTimetableDates = temporaryDates,
+            loadedMonths = setOf(YearMonth.from(today)),
         )
     }.getOrNull()
 
