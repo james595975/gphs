@@ -32,8 +32,29 @@ object SchoolData {
         // 내장 정규 시간표는 2학년 1반 자료다. 다른 반에 이를 대신 표시하지 않는다.
         if (settings.grade != 2 || settings.classNumber != 1) return emptyList()
         val day = days.firstOrNull { it.dayOfWeek == date.dayOfWeek.value } ?: return emptyList()
-        val mode = settings.eighthPeriodByDay[day.dayOfWeek] ?: EighthPeriodMode.EMPTY
-        return if (mode.subject == null) day.lessons else day.lessons + Lesson(8, mode.subject, 16 * 60 + 20, 17 * 60 + 10)
+        return day.lessons + additionalLessonsFor(date, settings)
+    }
+
+    fun additionalLessonsFor(date: LocalDate, settings: UserSettings): List<Lesson> {
+        val day = date.dayOfWeek.value
+        if (day !in 1..5) return emptyList()
+        val additional = mutableListOf<Lesson>()
+        val eighthMode = settings.eighthPeriodByDay[day] ?: EighthPeriodMode.EMPTY
+        if (eighthMode.subject != null) {
+            val group = SupplementaryCourseCatalog.groups.firstOrNull { it.usesEighthPeriod && day in it.days }
+            val course = group?.let { SupplementaryCourseCatalog.selected(it.id, settings) }
+            val subject = if (eighthMode == EighthPeriodMode.SUPPLEMENTARY) course?.subject ?: eighthMode.subject else eighthMode.subject
+            val room = if (eighthMode == EighthPeriodMode.SUPPLEMENTARY) course?.detail ?: settings.className else settings.className
+            additional += Lesson(8, subject, 16 * 60 + 20, 17 * 60 + 10, room)
+        }
+
+        val lateGroup = SupplementaryCourseCatalog.group(SupplementaryCourseCatalog.THURSDAY_LATE)
+        val lateCourse = lateGroup?.takeIf { day in it.days }?.let { SupplementaryCourseCatalog.selected(it.id, settings) }
+        if (lateCourse != null) {
+            additional += Lesson(9, lateCourse.subject, 18 * 60 + 10, 20 * 60, lateCourse.detail)
+            additional += Lesson(10, lateCourse.subject, 20 * 60 + 10, 22 * 60, lateCourse.detail)
+        }
+        return additional
     }
 
     fun isVacation(date: LocalDate) = !date.isBefore(LocalDate.of(2026, 7, 17)) && date.isBefore(LocalDate.of(2026, 8, 13))

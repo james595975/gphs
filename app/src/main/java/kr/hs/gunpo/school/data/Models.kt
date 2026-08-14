@@ -40,6 +40,74 @@ object VacationCourseCatalog {
     fun selected(period: Int, id: String?) = optionsFor(period).firstOrNull { it.id == id } ?: selfStudy
 }
 
+data class SupplementaryCourseOption(
+    val id: String,
+    val subject: String,
+    val description: String,
+    val teacher: String,
+) {
+    val detail: String get() = listOf(description, "교사 $teacher").filter(String::isNotBlank).joinToString(" · ")
+}
+
+data class SupplementaryCourseGroup(
+    val id: String,
+    val title: String,
+    val days: Set<Int>,
+    val periods: List<Int>,
+    val options: List<SupplementaryCourseOption>,
+) {
+    val usesEighthPeriod: Boolean get() = periods == listOf(8)
+}
+
+object SupplementaryCourseCatalog {
+    const val NONE = ""
+    const val SELF_STUDY = "self_study"
+    const val MONDAY_THURSDAY = "mon_thu_8"
+    const val TUESDAY_FRIDAY = "tue_fri_8"
+    const val THURSDAY_LATE = "thu_9_10"
+
+    val groups = listOf(
+        SupplementaryCourseGroup(
+            id = MONDAY_THURSDAY,
+            title = "월요일 · 목요일 8교시",
+            days = setOf(1, 4),
+            periods = listOf(8),
+            options = listOf(
+                SupplementaryCourseOption("monami", "모나미", "모르는게 나올수록 미래는 밝다", "이옥환"),
+                SupplementaryCourseOption("special_university_practical", "특수대학 실기지도", "", "김태호"),
+            ),
+        ),
+        SupplementaryCourseGroup(
+            id = TUESDAY_FRIDAY,
+            title = "화요일 · 금요일 8교시",
+            days = setOf(2, 5),
+            periods = listOf(8),
+            options = listOf(
+                SupplementaryCourseOption("bisanggu", "비.상.구", "비문학 점수 기상T와 구출하기", "최기상"),
+                SupplementaryCourseOption("hyunyoon_up", "현윤 내신 UP 문제풀이반", "", "조병필"),
+                SupplementaryCourseOption("badminton", "배드민턴", "", "김태호"),
+            ),
+        ),
+        SupplementaryCourseGroup(
+            id = THURSDAY_LATE,
+            title = "목요일 9 · 10교시",
+            days = setOf(4),
+            periods = listOf(9, 10),
+            options = listOf(
+                SupplementaryCourseOption("essay_argument", "논술", "논증 및 비판 글쓰기", "이복락"),
+            ),
+        ),
+    )
+
+    fun group(id: String) = groups.firstOrNull { it.id == id }
+
+    fun selected(groupId: String, settings: UserSettings): SupplementaryCourseOption? {
+        val group = group(groupId) ?: return null
+        val selectedId = settings.supplementaryCourseByGroup[groupId]
+        return group.options.firstOrNull { it.id == selectedId }
+    }
+}
+
 data class AcademicEvent(
     val start: LocalDate,
     val end: LocalDate = start,
@@ -71,6 +139,7 @@ data class UserSettings(
     val nightStudyByDay: Map<Int, Int> = (1..5).associateWith { 0 },
     val eighthPeriodByDay: Map<Int, EighthPeriodMode> = (1..5).associateWith { EighthPeriodMode.EMPTY },
     val vacationCourseByPeriod: Map<Int, String> = (1..5).associateWith { "self_study" },
+    val supplementaryCourseByGroup: Map<String, String> = SupplementaryCourseCatalog.groups.associate { it.id to SupplementaryCourseCatalog.NONE },
     val liveUpdatesEnabled: Boolean = false,
     val locationMonitoringEnabled: Boolean = false,
     val isLoaded: Boolean = false,

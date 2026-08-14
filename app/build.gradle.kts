@@ -28,8 +28,8 @@ android {
         applicationId = "kr.hs.gunpo.school"
         minSdk = 33
         targetSdk = 37
-        versionCode = 13
-        versionName = "0.1.12"
+        versionCode = 14
+        versionName = "0.1.13"
         buildConfigField("String", "CLOUDFLARE_API_BASE_URL", "\"${cloudflareApiBaseUrl.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
         buildConfigField("boolean", "FIREBASE_CONFIGURED", firebaseConfigured.toString())
         buildConfigField("String", "FIREBASE_AI_MODEL", "\"gemini-3.5-flash\"")

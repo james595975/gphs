@@ -22,6 +22,7 @@ class SettingsRepository(private val context: Context) {
         fun nightStudy(day: Int) = intPreferencesKey("yaja_$day")
         fun eighthPeriod(day: Int) = stringPreferencesKey("eighth_period_$day")
         fun vacationCourse(period: Int) = stringPreferencesKey("vacation_period_${period}_course")
+        fun supplementaryCourse(groupId: String) = stringPreferencesKey("supplementary_course_$groupId")
     }
 
     val settings: Flow<UserSettings> = context.settingsDataStore.data.map { prefs ->
@@ -39,6 +40,9 @@ class SettingsRepository(private val context: Context) {
                     ?: EighthPeriodMode.EMPTY
             },
             vacationCourseByPeriod = (1..5).associateWith { prefs[Keys.vacationCourse(it)] ?: "self_study" },
+            supplementaryCourseByGroup = SupplementaryCourseCatalog.groups.associate { group ->
+                group.id to (prefs[Keys.supplementaryCourse(group.id)] ?: SupplementaryCourseCatalog.NONE)
+            },
             liveUpdatesEnabled = prefs[Keys.liveUpdates] ?: false,
             locationMonitoringEnabled = prefs[Keys.locationMonitoring] ?: false,
             isLoaded = true,
@@ -65,6 +69,30 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun updateVacationCourse(period: Int, optionID: String) {
         context.settingsDataStore.edit { it[Keys.vacationCourse(period)] = optionID }
+    }
+
+    suspend fun updateSupplementaryCourse(groupId: String, selectionId: String) {
+        val group = requireNotNull(SupplementaryCourseCatalog.group(groupId)) { "알 수 없는 보충수업 그룹입니다." }
+        val validSelections = group.options.map { it.id }.toSet() +
+            if (group.usesEighthPeriod) setOf(SupplementaryCourseCatalog.NONE, SupplementaryCourseCatalog.SELF_STUDY)
+            else setOf(SupplementaryCourseCatalog.NONE)
+        require(selectionId in validSelections) { "알 수 없는 보충 과목입니다." }
+        context.settingsDataStore.edit { prefs ->
+            val selectedCourseId = selectionId.takeUnless {
+                it == SupplementaryCourseCatalog.NONE || it == SupplementaryCourseCatalog.SELF_STUDY
+            }
+            if (selectedCourseId == null) prefs.remove(Keys.supplementaryCourse(groupId))
+            else prefs[Keys.supplementaryCourse(groupId)] = selectedCourseId
+
+            if (group.usesEighthPeriod) {
+                val mode = when (selectionId) {
+                    SupplementaryCourseCatalog.NONE -> EighthPeriodMode.EMPTY
+                    SupplementaryCourseCatalog.SELF_STUDY -> EighthPeriodMode.SELF_STUDY
+                    else -> EighthPeriodMode.SUPPLEMENTARY
+                }
+                group.days.forEach { day -> prefs[Keys.eighthPeriod(day)] = mode.name }
+            }
+        }
     }
 
     suspend fun updateLiveUpdates(enabled: Boolean) {

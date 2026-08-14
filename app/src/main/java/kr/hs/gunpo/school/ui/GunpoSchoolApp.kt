@@ -136,8 +136,9 @@ import kr.hs.gunpo.school.data.NeisState
 import kr.hs.gunpo.school.data.parseStudentNumber
 import kr.hs.gunpo.school.data.NoticeState
 import kr.hs.gunpo.school.data.SchoolData
+import kr.hs.gunpo.school.data.SupplementaryCourseCatalog
+import kr.hs.gunpo.school.data.SupplementaryCourseGroup
 import kr.hs.gunpo.school.data.UserSettings
-import kr.hs.gunpo.school.data.VacationCourseCatalog
 import kr.hs.gunpo.school.domain.SchoolMoment
 import kr.hs.gunpo.school.domain.SchoolAssistant
 import kr.hs.gunpo.school.domain.HybridSchoolAssistant
@@ -198,9 +199,9 @@ private fun effectiveLessons(date: LocalDate, settings: UserSettings, neisState:
     }
     val remote = neisState.timetableByDate[date]
     if (remote != null) {
-        val eighth = settings.eighthPeriodByDay[date.dayOfWeek.value]?.subject
-        return if (eighth == null || remote.any { it.period == 8 }) remote
-        else remote + Lesson(8, eighth, 16 * 60 + 20, 17 * 60 + 10, settings.className)
+        val additional = SchoolData.additionalLessonsFor(date, settings)
+            .filter { extra -> remote.none { it.period == extra.period } }
+        return remote + additional
     }
     val monthWasSynced = neisState.timetableByDate.keys.any { it.year == date.year && it.month == date.month }
     return if (monthWasSynced) emptyList() else SchoolData.lessonsFor(date, settings)
@@ -837,8 +838,11 @@ private fun TimetableScreen(
 ) {
     val today = now.toLocalDate()
     val todayIndex = (today.dayOfWeek.value - 1).coerceIn(0, 4)
-    var selectedIndex by remember(today) { mutableIntStateOf(todayIndex) }
-    var weekOffset by remember(today) { mutableIntStateOf(0) }
+    val defaultDate = SchoolTimeline.defaultTimetableDate(now, effectiveLessons(today, settings, neisState))
+    val startsOnNextMonday = defaultDate != today
+    var selectedIndex by remember(today) { mutableIntStateOf(if (startsOnNextMonday) 0 else todayIndex) }
+    var weekOffset by remember(today) { mutableIntStateOf(if (startsOnNextMonday) 1 else 0) }
+    var automaticAdvanceApplied by remember(today) { mutableStateOf(startsOnNextMonday) }
     val currentMonday = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
     val monday = currentMonday.plusWeeks(weekOffset.toLong())
     val friday = monday.plusDays(4)
@@ -854,6 +858,13 @@ private fun TimetableScreen(
         else -> if (neisState.timetableByDate.isNotEmpty()) "NEIS" else null
     }
     LaunchedEffect(monday) { loadWeek(monday) }
+    LaunchedEffect(defaultDate) {
+        if (!automaticAdvanceApplied && defaultDate != today) {
+            selectedIndex = 0
+            weekOffset = 1
+            automaticAdvanceApplied = true
+        }
+    }
 
     Column(Modifier.fillMaxSize().padding(padding)) {
         NavigationHeader("주간 시간표", badge = timetableBadge)
@@ -881,7 +892,10 @@ private fun TimetableScreen(
                                 }
                             }
                         }
-                        IconButton(onClick = { weekOffset++ }) {
+                        IconButton(onClick = {
+                            weekOffset++
+                            selectedIndex = 0
+                        }) {
                             Icon(Icons.Default.ChevronRight, "다음 주")
                         }
                     }
@@ -1368,65 +1382,29 @@ private fun ProfileSettings(
 
 @Composable
 private fun ScheduleSettings(settings: UserSettings, viewModel: MainViewModel, padding: PaddingValues, onBack: () -> Unit) {
-    var showVacation by remember { mutableStateOf(false) }
-    var selectedPeriod by remember { mutableStateOf<Int?>(null) }
-    BackHandler {
-        when {
-            selectedPeriod != null -> selectedPeriod = null
-            showVacation -> showVacation = false
-            else -> onBack()
-        }
-    }
-    when {
-        selectedPeriod != null -> VacationCourseSelection(selectedPeriod!!, settings, viewModel, padding) { selectedPeriod = null }
-        showVacation -> VacationCourseSettings(settings, padding, onBack = { showVacation = false }, onPeriod = { selectedPeriod = it })
-        else -> LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(bottom = 18.dp)) {
-            item { NavigationHeader("학교생활 선택", onBack = onBack) }
-            item {
-                Column(Modifier.padding(horizontal = 18.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
-                    SettingsSection("여름방학 시간표") {
-                        SettingsActionRow(Icons.AutoMirrored.Filled.MenuBook, "방학 과목 선택", showChevron = true) { showVacation = true }
-                    }
-                    SettingsSection("8교시 일정") {
-                        EighthSetting("월요일 · 목요일", listOf(1, 4), settings, viewModel)
-                        HorizontalDivider()
-                        EighthSetting("화요일 · 금요일", listOf(2, 5), settings, viewModel)
-                        HorizontalDivider()
-                        EighthSetting("수요일", listOf(3), settings, viewModel, EighthPeriodMode.entries.filter { it != EighthPeriodMode.SUPPLEMENTARY })
-                    }
-                    SettingsSection("요일별 야간자습") {
-                        SchoolData.days.forEachIndexed { index, day ->
-                            NightStudySetting(day.longName, day.dayOfWeek, settings, viewModel)
-                            if (index != SchoolData.days.lastIndex) HorizontalDivider()
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun VacationCourseSettings(settings: UserSettings, padding: PaddingValues, onBack: () -> Unit, onPeriod: (Int) -> Unit) {
     LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(bottom = 18.dp)) {
-        item { NavigationHeader("방학 과목 선택", onBack = onBack) }
+        item { NavigationHeader("학교생활 선택", onBack = onBack) }
         item {
             Column(Modifier.padding(horizontal = 18.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
-                SettingsSection("여름방학 시간") {
-                    SettingsRow(Icons.Default.CalendarMonth, "2026년 7월 17일–8월 12일", "70분 수업 · 5교시", SchoolOrange)
+                SettingsSection("보충 과목") {
+                    SupplementaryCourseCatalog.groups.forEachIndexed { index, group ->
+                        SupplementaryCourseSetting(group, settings, viewModel)
+                        if (index != SupplementaryCourseCatalog.groups.lastIndex) HorizontalDivider()
+                    }
                 }
-                SettingsSection("교시별 과목") {
-                    (1..5).forEach { period ->
-                        val option = VacationCourseCatalog.selected(period, settings.vacationCourseByPeriod[period])
-                        Row(Modifier.fillMaxWidth().clickable { onPeriod(period) }.padding(14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Surface(shape = CircleShape, color = SchoolBlue) { Box(Modifier.size(30.dp), contentAlignment = Alignment.Center) { Text("$period", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp) } }
-                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                Text(option.subject, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 2)
-                                Text(option.room, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
-                            }
-                            Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        if (period != 5) HorizontalDivider(Modifier.padding(start = 56.dp))
+                SettingsSection("수요일 8교시") {
+                    EighthSetting(
+                        "수요일",
+                        listOf(3),
+                        settings,
+                        viewModel,
+                        EighthPeriodMode.entries.filter { it != EighthPeriodMode.SUPPLEMENTARY },
+                    )
+                }
+                SettingsSection("요일별 야간자습") {
+                    SchoolData.days.forEachIndexed { index, day ->
+                        NightStudySetting(day.longName, day.dayOfWeek, settings, viewModel)
+                        if (index != SchoolData.days.lastIndex) HorizontalDivider()
                     }
                 }
             }
@@ -1435,20 +1413,59 @@ private fun VacationCourseSettings(settings: UserSettings, padding: PaddingValue
 }
 
 @Composable
-private fun VacationCourseSelection(period: Int, settings: UserSettings, viewModel: MainViewModel, padding: PaddingValues, onBack: () -> Unit) {
-    val selected = settings.vacationCourseByPeriod[period]
-    Column(Modifier.fillMaxSize().padding(padding)) {
-        NavigationHeader("${period}교시 과목", onBack = onBack)
-        LazyColumn(contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp)) {
-            items(VacationCourseCatalog.optionsFor(period)) { option ->
-                Row(Modifier.fillMaxWidth().clickable { viewModel.updateVacationCourse(period, option.id) }.padding(vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(option.subject, fontWeight = FontWeight.SemiBold)
-                        Text(option.room, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
-                    }
-                    if (selected == option.id) Icon(Icons.Default.CheckCircle, null, tint = SchoolBlue)
-                }
-                HorizontalDivider()
+private fun SupplementaryCourseSetting(group: SupplementaryCourseGroup, settings: UserSettings, viewModel: MainViewModel) {
+    var expanded by remember { mutableStateOf(false) }
+    val mode = group.days.firstOrNull()?.let(settings.eighthPeriodByDay::get)
+    val selectedCourse = SupplementaryCourseCatalog.selected(group.id, settings)
+    val selectedLabel = when {
+        !group.usesEighthPeriod -> selectedCourse?.subject ?: "안 함"
+        mode == EighthPeriodMode.SELF_STUDY -> "자습"
+        mode == EighthPeriodMode.SUPPLEMENTARY -> selectedCourse?.subject ?: "보충 과목 선택"
+        else -> "안 함"
+    }
+    Box {
+        Row(
+            Modifier.fillMaxWidth().clickable { expanded = true }.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(group.title, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                Text(selectedLabel, color = SchoolBlue, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 2)
+                selectedCourse?.let { Text(it.detail, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp) }
+            }
+            Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, modifier = Modifier.widthIn(min = 280.dp)) {
+            DropdownMenuItem(
+                text = { Text("안 함") },
+                onClick = {
+                    viewModel.updateSupplementaryCourse(group.id, SupplementaryCourseCatalog.NONE)
+                    expanded = false
+                },
+            )
+            if (group.usesEighthPeriod) {
+                DropdownMenuItem(
+                    text = { Text("자습") },
+                    onClick = {
+                        viewModel.updateSupplementaryCourse(group.id, SupplementaryCourseCatalog.SELF_STUDY)
+                        expanded = false
+                    },
+                )
+            }
+            group.options.forEach { option ->
+                DropdownMenuItem(
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(option.subject, fontWeight = FontWeight.SemiBold)
+                            Text(option.detail, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+                        }
+                    },
+                    onClick = {
+                        viewModel.updateSupplementaryCourse(group.id, option.id)
+                        expanded = false
+                    },
+                )
             }
         }
     }

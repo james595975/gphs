@@ -160,6 +160,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         repository.updateVacationCourse(period, optionID)
     }
 
+    fun updateSupplementaryCourse(groupId: String, selectionId: String) = viewModelScope.launch {
+        repository.updateSupplementaryCourse(groupId, selectionId)
+    }
+
     fun updateLiveUpdates(enabled: Boolean) = viewModelScope.launch {
         repository.updateLiveUpdates(enabled)
         if (enabled) SchoolNotificationManager.refresh(getApplication())
