@@ -38,6 +38,13 @@ type TemporaryTimetableRow = {
   source_name: string;
 };
 
+type TimetableDateOverrideRow = {
+  lesson_date: string;
+  period: number;
+  subject: string;
+  source_name: string;
+};
+
 const OFFICE_CODE = "J10";
 const SCHOOL_CODE = "7530148";
 const NEIS_BASE_URL = "https://open.neis.go.kr/hub";
@@ -320,12 +327,12 @@ function timetableRows(jsonText: string): Array<Record<string, unknown>> {
 }
 
 const SECOND_GRADE_ELECTIVE_BLOCKS: Record<string, string> = {
-  "1-3": "2A", "3-2": "2A", "4-5": "2A",
-  "2-2": "2B", "3-3": "2B", "4-6": "2B",
-  "1-4": "2C", "2-5": "2C", "5-3": "2C",
-  "2-6": "2D", "4-1": "2D", "5-4": "2D",
-  "5-5": "2E", "5-6": "2E",
-  "1-2": "2F", "2-7": "2F", "3-1": "2F",
+  "1-3": "2A", "1-4": "2C", "1-6": "논리와 사고",
+  "2-1": "논리와 사고", "2-2": "2B", "2-3": "인간과 경제활동",
+  "2-5": "2C", "2-6": "2D",
+  "3-2": "2A", "3-3": "2B",
+  "4-1": "2D", "4-4": "논리와 사고", "4-5": "2A", "4-6": "2B",
+  "5-3": "2C", "5-4": "2D", "5-5": "인간과 경제활동",
 };
 
 function preserveElectiveBlockLabels(timetableJson: string): string {
@@ -345,10 +352,67 @@ function preserveElectiveBlockLabels(timetableJson: string): string {
       Number(dateText.slice(6, 8)),
     ));
     const label = SECOND_GRADE_ELECTIVE_BLOCKS[`${date.getUTCDay()}-${Number(row.PERIO)}`];
-    const keepsActualSubject = String(row.CLASS_NM) === "4" && (label === "2E" || label === "2F");
-    if (label && !keepsActualSubject) row.ITRT_CNTNT = label;
+    if (label) row.ITRT_CNTNT = label;
   });
   return JSON.stringify(root);
+}
+
+function scheduleRows(scheduleJson: string): Array<Record<string, unknown>> {
+  const root = JSON.parse(scheduleJson) as Record<string, unknown>;
+  const blocks = Array.isArray(root.SchoolSchedule)
+    ? root.SchoolSchedule as Array<Record<string, unknown>>
+    : [];
+  return blocks.flatMap((block) =>
+    Array.isArray(block.row) ? block.row as Array<Record<string, unknown>> : [],
+  );
+}
+
+async function syncWednesdayActivities(env: Env, scheduleJson: string, year: number): Promise<number> {
+  if (year !== 2026) return 0;
+  const rows = scheduleRows(scheduleJson);
+  if (rows.length === 0) return 0;
+
+  const eventsByDate = new Map<string, string[]>();
+  rows.filter((row) => String(row.TW_GRADE_EVENT_YN) === "Y").forEach((row) => {
+    const date = String(row.AA_YMD);
+    const events = eventsByDate.get(date) || [];
+    events.push(String(row.EVENT_NM));
+    eventsByDate.set(date, events);
+  });
+  const replacesRegularClasses = [
+    "평가", "지필", "체험학습", "방학", "휴일", "추석", "설날", "신정", "성탄", "수능",
+  ];
+  const activities: Array<{lessonDate: string; subject: string}> = [];
+  for (let date = new Date(Date.UTC(2026, 7, 19)); date <= new Date(Date.UTC(2026, 11, 30)); date.setUTCDate(date.getUTCDate() + 7)) {
+    const lessonDate = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
+    const ymdDate = lessonDate.replaceAll("-", "");
+    const events = eventsByDate.get(ymdDate) || [];
+    if (events.some((event) => replacesRegularClasses.some((keyword) => event.includes(keyword)))) continue;
+    activities.push({
+      lessonDate,
+      subject: events.some((event) => event.includes("동아리")) ? "동아리" : "교육",
+    });
+  }
+
+  const cacheKey = "timetable_wednesday_activities_2026";
+  const cached = await getCache<Array<{lessonDate: string; subject: string}>>(env, cacheKey);
+  if (cached && JSON.stringify(cached.value) === JSON.stringify(activities)) return activities.length * 2;
+
+  const statements = [
+    env.DB.prepare(
+      `DELETE FROM timetable_date_overrides
+       WHERE academic_year = 2026 AND grade = 2 AND class_number = 0
+         AND lesson_date BETWEEN '2026-08-13' AND '2026-12-31'`,
+    ),
+    ...activities.flatMap((activity) => [6, 7].map((period) => env.DB.prepare(
+      `INSERT INTO timetable_date_overrides (
+         academic_year, grade, class_number, lesson_date, period, subject, source_name, updated_at
+       ) VALUES (2026, 2, 0, ?1, ?2, ?3, 'NEIS SchoolSchedule', ?4)`,
+    ).bind(activity.lessonDate, period, activity.subject, Date.now()))),
+  ];
+  await env.DB.batch(statements);
+  await putCache(env, cacheKey, activities);
+  return activities.length * 2;
 }
 
 async function mergeTemporaryTimetable(
@@ -367,17 +431,26 @@ async function mergeTemporaryTimetable(
 }> {
   const monthStart = `${year}-${String(month).padStart(2, "0")}-01`;
   const monthEnd = `${year}-${String(month).padStart(2, "0")}-${String(lastDay(year, month)).padStart(2, "0")}`;
-  const result = await env.DB.prepare(
-    `SELECT academic_year, semester, day_of_week, period, subject,
-            effective_from, effective_to, source_name
-     FROM temporary_timetable
-     WHERE grade = ?1 AND class_number = ?2
-       AND effective_from <= ?3 AND effective_to >= ?4
-     ORDER BY day_of_week, period`,
-  ).bind(grade, classNumber, monthEnd, monthStart).all<TemporaryTimetableRow>();
+  const [result, dateOverrides] = await Promise.all([
+    env.DB.prepare(
+      `SELECT academic_year, semester, day_of_week, period, subject,
+              effective_from, effective_to, source_name
+       FROM temporary_timetable
+       WHERE grade = ?1 AND class_number = ?2
+         AND effective_from <= ?3 AND effective_to >= ?4
+       ORDER BY day_of_week, period`,
+    ).bind(grade, classNumber, monthEnd, monthStart).all<TemporaryTimetableRow>(),
+    env.DB.prepare(
+      `SELECT lesson_date, period, subject, source_name
+       FROM timetable_date_overrides
+       WHERE grade = ?1 AND (class_number = 0 OR class_number = ?2)
+         AND lesson_date BETWEEN ?3 AND ?4
+       ORDER BY lesson_date, period, class_number`,
+    ).bind(grade, classNumber, monthStart, monthEnd).all<TimetableDateOverrideRow>(),
+  ]);
 
   const officialRows = timetableRows(timetableJson);
-  if (result.results.length === 0) {
+  if (result.results.length === 0 && dateOverrides.results.length === 0) {
     return {
       timetableJson,
       source: officialRows.length > 0 ? "neis" : "none",
@@ -423,6 +496,29 @@ async function mergeTemporaryTimetable(
         });
       });
   }
+
+  dateOverrides.results.forEach((override) => {
+    const ymdDate = override.lesson_date.replaceAll("-", "");
+    if (officialDates.has(ymdDate)) return;
+    const existingIndex = fallbackRows.findIndex((row) =>
+      String(row.ALL_TI_YMD) === ymdDate && Number(row.PERIO) === override.period
+    );
+    if (existingIndex >= 0) fallbackRows.splice(existingIndex, 1);
+    fallbackDates.add(override.lesson_date);
+    fallbackRows.push({
+      ATPT_OFCDC_SC_CODE: OFFICE_CODE,
+      SD_SCHUL_CODE: SCHOOL_CODE,
+      AY: "2026",
+      SEM: "2",
+      GRADE: String(grade),
+      CLASS_NM: String(classNumber),
+      ALL_TI_YMD: ymdDate,
+      PERIO: String(override.period),
+      ITRT_CNTNT: override.subject,
+      TMPR_TI_YN: "Y",
+      TMPR_OVERRIDE_YN: "Y",
+    });
+  });
 
   if (fallbackRows.length === 0) {
     return {
@@ -527,6 +623,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       loadCommonNeis(env, year, month, sync),
       loadTimetable(env, year, month, grade, classNumber, sync),
     ]);
+    const activityOverrideCount = await syncWednesdayActivities(env, common.scheduleJson, year);
     const mergedMeals = await mergeContractDinners(env, common.mealJson, year, month, grade);
     const mergedTimetable = await mergeTemporaryTimetable(
       env,
@@ -546,6 +643,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         rowCount: mergedTimetable.fallbackRowCount,
         dates: mergedTimetable.fallbackDates,
         sourceName: mergedTimetable.sourceName,
+        activityOverrideCount,
       },
       cached: common.cached || timetable.cached,
       syncMode: sync ? "realtime" : "cache-first",
