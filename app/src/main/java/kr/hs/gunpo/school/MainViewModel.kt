@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.time.LocalDate
+import java.time.YearMonth
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = SettingsRepository(application)
@@ -67,6 +68,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         settings.value.takeIf { it.isLoaded && it.isProfileConfigured }?.let { loadNeis(it, date) }
     }
 
+    fun loadNeisForWeek(monday: LocalDate) = viewModelScope.launch {
+        val userSettings = settings.value.takeIf { it.isLoaded && it.isProfileConfigured } ?: return@launch
+        val requestedMonths = (0L..4L).map { YearMonth.from(monday.plusDays(it)) }.distinct()
+        var combined = _neisState.value
+        val missingMonths = requestedMonths.filter { it !in combined.loadedMonths }
+        if (missingMonths.isEmpty()) return@launch
+
+        _neisState.value = combined.copy(isLoading = true, errorMessage = null)
+        missingMonths.forEach { month ->
+            val result = neisRepository.load(userSettings, month.atDay(1))
+            val latestSettings = settings.value
+            if (latestSettings.grade != userSettings.grade || latestSettings.classNumber != userSettings.classNumber) {
+                return@launch
+            }
+            combined = mergeNeisStates(_neisState.value, result)
+            _neisState.value = combined.copy(isLoading = false)
+        }
+    }
+
     fun refreshNotices() = viewModelScope.launch { loadNotices(forceRefresh = true) }
 
     private suspend fun loadNeis(userSettings: UserSettings, date: LocalDate = NetworkClock.now().toLocalDate()) {
@@ -88,6 +108,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (latestSettings.grade == userSettings.grade && latestSettings.classNumber == userSettings.classNumber) {
             _neisState.value = result
         }
+    }
+
+    private fun mergeNeisStates(previous: NeisState, next: NeisState): NeisState {
+        if (next.errorMessage != null) {
+            return previous.copy(isLoading = false, errorMessage = next.errorMessage)
+        }
+        val sources = setOfNotNull(previous.timetableSource, next.timetableSource).filter { it != "none" }.toSet()
+        val source = when {
+            "mixed" in sources || sources.size > 1 -> "mixed"
+            else -> sources.firstOrNull()
+        }
+        return NeisState(
+            meals = (previous.meals + next.meals)
+                .distinctBy { it.date to it.type }
+                .sortedWith(compareBy({ it.date }, { it.type })),
+            events = (previous.events + next.events).distinct().sortedBy { it.start },
+            timetableByDate = previous.timetableByDate + next.timetableByDate,
+            isLoading = false,
+            isFromCache = previous.isFromCache || next.isFromCache,
+            grade = next.grade,
+            classNumber = next.classNumber,
+            timetableSource = source,
+            temporaryTimetableDates = previous.temporaryTimetableDates + next.temporaryTimetableDates,
+            loadedMonths = previous.loadedMonths + next.loadedMonths,
+        )
     }
 
     private suspend fun loadNotices(forceRefresh: Boolean = false) {
