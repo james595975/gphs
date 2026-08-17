@@ -139,6 +139,8 @@ import kr.hs.gunpo.school.data.SchoolData
 import kr.hs.gunpo.school.data.SupplementaryCourseCatalog
 import kr.hs.gunpo.school.data.SupplementaryCourseGroup
 import kr.hs.gunpo.school.data.UserSettings
+import kr.hs.gunpo.school.domain.AcademicScheduleKind
+import kr.hs.gunpo.school.domain.AcademicSchedulePolicy
 import kr.hs.gunpo.school.domain.SchoolMoment
 import kr.hs.gunpo.school.domain.SchoolAssistant
 import kr.hs.gunpo.school.domain.HybridSchoolAssistant
@@ -193,6 +195,7 @@ private fun isHomeHighlight(event: AcademicEvent): Boolean =
     homeEventKeywords.any { keyword -> event.title.contains(keyword) }
 
 private fun effectiveLessons(date: LocalDate, settings: UserSettings, neisState: NeisState): List<Lesson> {
+    AcademicSchedulePolicy.overrideFor(date, effectiveEvents(settings, neisState))?.let { return it.lessons }
     if (SchoolData.isVacation(date)) return SchoolData.lessonsFor(date, settings)
     if (neisState.grade != settings.grade || neisState.classNumber != settings.classNumber) {
         return SchoolData.lessonsFor(date, settings)
@@ -847,15 +850,21 @@ private fun TimetableScreen(
     val monday = currentMonday.plusWeeks(weekOffset.toLong())
     val friday = monday.plusDays(4)
     val selectedDate = monday.plusDays(selectedIndex.toLong())
+    val scheduleOverride = AcademicSchedulePolicy.overrideFor(selectedDate, effectiveEvents(settings, neisState))
     val lessons = effectiveLessons(selectedDate, settings, neisState)
     val isVacation = SchoolData.isVacation(selectedDate)
     val isTemporaryTimetable = selectedDate in neisState.temporaryTimetableDates
     val selectedEvent = effectiveEvents(settings, neisState).firstOrNull { selectedDate in it.start..it.end }
     val current = if (selectedDate == today) (SchoolTimeline.moment(now, lessons) as? SchoolMoment.InClass)?.lesson?.period else null
-    val timetableBadge = when (neisState.timetableSource) {
-        "temporary" -> "임시"
-        "mixed" -> "NEIS·임시"
-        else -> if (neisState.timetableByDate.isNotEmpty()) "NEIS" else null
+    val timetableBadge = when (scheduleOverride?.kind) {
+        AcademicScheduleKind.HOLIDAY_SELF_STUDY -> "공휴일"
+        AcademicScheduleKind.STUDY_ROOM_CLOSED -> "운영 안 함"
+        AcademicScheduleKind.ACADEMIC_ASSESSMENT -> "학력평가"
+        null -> when (neisState.timetableSource) {
+            "temporary" -> "임시"
+            "mixed" -> "NEIS·임시"
+            else -> if (neisState.timetableByDate.isNotEmpty()) "NEIS" else null
+        }
     }
     LaunchedEffect(monday) { loadWeek(monday) }
     LaunchedEffect(defaultDate) {
@@ -913,23 +922,38 @@ private fun TimetableScreen(
                                 fontWeight = FontWeight.Bold,
                             )
                             Text(
-                                if (isVacation) "70분 수업 · 선택 과목 및 강의실" else if (neisState.timetableByDate.containsKey(selectedDate)) {
-                                    val source = if (isTemporaryTimetable) "임시 시간표" else "NEIS 시간표"
-                                    "$source · ${settings.grade}학년 ${settings.classNumber}반"
-                                } else "저장된 시간표 · 7교시",
+                                when (scheduleOverride?.kind) {
+                                    AcademicScheduleKind.HOLIDAY_SELF_STUDY -> "${scheduleOverride.eventTitle} · 전 교시 자습"
+                                    AcademicScheduleKind.STUDY_ROOM_CLOSED -> "${scheduleOverride.eventTitle} · 자습실 미운영"
+                                    AcademicScheduleKind.ACADEMIC_ASSESSMENT -> "${scheduleOverride.eventTitle} · 시험 시간표"
+                                    null -> if (isVacation) "70분 수업 · 선택 과목 및 강의실" else if (neisState.timetableByDate.containsKey(selectedDate)) {
+                                        val source = if (isTemporaryTimetable) "임시 시간표" else "NEIS 시간표"
+                                        "$source · ${settings.grade}학년 ${settings.classNumber}반"
+                                    } else "저장된 시간표 · 7교시"
+                                },
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontSize = 12.sp,
                             )
                         }
-                        Badge(if (lessons.isEmpty()) "수업 없음" else "${lessons.size}교시", SchoolBlue)
+                        Badge(
+                            if (scheduleOverride?.kind == AcademicScheduleKind.STUDY_ROOM_CLOSED) "운영 안 함"
+                            else if (lessons.isEmpty()) "수업 없음" else "${lessons.size}교시",
+                            if (scheduleOverride?.kind == AcademicScheduleKind.STUDY_ROOM_CLOSED) SchoolOrange else SchoolBlue,
+                        )
                     }
                     Spacer(Modifier.height(14.dp))
                     if (lessons.isEmpty()) {
                         Column(Modifier.fillMaxWidth().padding(vertical = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                             Icon(Icons.Default.Flag, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(selectedEvent?.title ?: "수업 정보 없음", fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 7.dp))
+                            Text(
+                                if (scheduleOverride?.kind == AcademicScheduleKind.STUDY_ROOM_CLOSED) scheduleOverride.eventTitle
+                                else selectedEvent?.title ?: "수업 정보 없음",
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(top = 7.dp),
+                            )
                             Text(
                                 when {
+                                    scheduleOverride?.kind == AcademicScheduleKind.STUDY_ROOM_CLOSED -> "오늘은 자습실을 운영하지 않습니다."
                                     neisState.isLoading -> "시간표를 불러오는 중입니다."
                                     selectedEvent != null -> "${selectedEvent.scope} 학사일정입니다."
                                     else -> "이 날짜에 등록된 수업이 없습니다."
