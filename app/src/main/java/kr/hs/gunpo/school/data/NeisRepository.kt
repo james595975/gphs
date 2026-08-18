@@ -37,7 +37,11 @@ class NeisRepository(private val context: Context) {
         private val DATE = DateTimeFormatter.BASIC_ISO_DATE
     }
 
-    suspend fun load(settings: UserSettings, today: LocalDate): NeisState = withContext(Dispatchers.IO) {
+    suspend fun load(
+        settings: UserSettings,
+        today: LocalDate,
+        forceServerSync: Boolean = true,
+    ): NeisState = withContext(Dispatchers.IO) {
         val monthFrom = today.withDayOfMonth(1)
         val monthTo = monthFrom.plusMonths(1).withDayOfMonth(monthFrom.plusMonths(1).lengthOfMonth())
         val yearFrom = LocalDate.of(today.year, 1, 1)
@@ -58,7 +62,7 @@ class NeisRepository(private val context: Context) {
 
         try {
             if (BuildConfig.CLOUDFLARE_API_BASE_URL.isNotBlank()) {
-                loadFromServer(settings, today)?.let { return@withContext it }
+                loadFromServer(settings, today, forceServerSync)?.let { return@withContext it }
             }
             val (mealJson, mealCached) = cachedOrFetch(
                 "meal_${today.year}_${today.monthValue}",
@@ -101,8 +105,12 @@ class NeisRepository(private val context: Context) {
         }
     }
 
-    private fun loadFromServer(settings: UserSettings, today: LocalDate): NeisState? = runCatching {
-        val query = "grade=${settings.grade}&classNumber=${settings.classNumber}&year=${today.year}&month=${today.monthValue}&sync=true"
+    private fun loadFromServer(
+        settings: UserSettings,
+        today: LocalDate,
+        forceSync: Boolean,
+    ): NeisState? = runCatching {
+        val query = "grade=${settings.grade}&classNumber=${settings.classNumber}&year=${today.year}&month=${today.monthValue}&sync=$forceSync"
         val connection = URL("${BuildConfig.CLOUDFLARE_API_BASE_URL}/v1/neis?$query").openConnection() as HttpURLConnection
         val body = connection.run {
             requestMethod = "GET"

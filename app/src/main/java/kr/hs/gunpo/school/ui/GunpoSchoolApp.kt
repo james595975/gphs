@@ -896,7 +896,13 @@ private fun TimetableScreen(
                             if (weekOffset == 0) {
                                 Text("이번 주", color = SchoolBlue, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             } else {
-                                TextButton(onClick = { weekOffset = 0 }, contentPadding = PaddingValues(0.dp)) {
+                                TextButton(
+                                    onClick = {
+                                        weekOffset = 0
+                                        selectedIndex = todayIndex
+                                    },
+                                    contentPadding = PaddingValues(0.dp),
+                                ) {
                                     Text("이번 주로 이동", color = SchoolBlue, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                 }
                             }
