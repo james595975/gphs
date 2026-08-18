@@ -13,7 +13,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.glance.appwidget.updateAll
 import kr.hs.gunpo.school.MainActivity
 import kr.hs.gunpo.school.data.Lesson
-import kr.hs.gunpo.school.data.SchoolData
+import kr.hs.gunpo.school.data.NeisRepository
 import kr.hs.gunpo.school.data.SettingsRepository
 import kr.hs.gunpo.school.domain.SchoolMoment
 import kr.hs.gunpo.school.domain.SchoolTimeline
@@ -31,16 +31,28 @@ object SchoolNotificationManager {
     private const val CHANNEL_ID = "school_live_status"
     private const val NOTIFICATION_ID = 20423
     private const val REQUEST_CODE = 20424
+    private const val SYNC_RETRY_MINUTES = 15L
 
     suspend fun refresh(context: Context) {
         val settings = SettingsRepository(context).settings.first()
         if (!settings.liveUpdatesEnabled) return stop(context)
+        if (!settings.isProfileConfigured) return stop(context)
         createChannel(context)
         NetworkClock.synchronize()
         val now = NetworkClock.now()
-        val lessons = SchoolData.lessonsFor(now.toLocalDate(), settings)
-        val moment = SchoolTimeline.moment(now, lessons)
-        val (title, text) = notificationText(moment)
+        // 알림 리시버에서도 서버 캐시를 조회해 앱을 열지 않아도 해당 학년·반 시간표를 사용한다.
+        // 매 교시마다 NEIS를 강제 호출하지 않도록 Cloudflare에는 캐시 우선 모드로 요청한다.
+        val neisState = NeisRepository(context).load(
+            settings = settings,
+            today = now.toLocalDate(),
+            forceServerSync = false,
+        )
+        val schedule = NotificationScheduleResolver.resolve(now.toLocalDate(), settings, neisState)
+        val (title, text) = if (schedule.isAvailable) {
+            notificationText(SchoolTimeline.moment(now, schedule.lessons))
+        } else {
+            "시간표 동기화 대기 중" to "Cloudflare 연결을 확인한 뒤 자동으로 다시 시도합니다."
+        }
         val openApp = PendingIntent.getActivity(
             context,
             0,
@@ -62,7 +74,11 @@ object SchoolNotificationManager {
             NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, builder.build())
         }
         SchoolWidget().updateAll(context)
-        scheduleNext(context, now, lessons)
+        if (schedule.isAvailable) {
+            scheduleNext(context, now, schedule.lessons)
+        } else {
+            scheduleAt(context, now.plusMinutes(SYNC_RETRY_MINUTES))
+        }
     }
 
     fun stop(context: Context) {
@@ -90,6 +106,10 @@ object SchoolNotificationManager {
         } else {
             now.toLocalDate().plusDays(1).atTime(7, 30)
         }
+        scheduleAt(context, next)
+    }
+
+    private fun scheduleAt(context: Context, next: LocalDateTime) {
         val millis = next.atZone(ZoneId.of("Asia/Seoul")).toInstant().toEpochMilli()
         context.getSystemService(AlarmManager::class.java).setAndAllowWhileIdle(
             AlarmManager.RTC_WAKEUP,
