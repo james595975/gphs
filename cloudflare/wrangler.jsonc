@@ -6,6 +6,10 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "preview_urls": false,
+  "vars": {
+    "FIREBASE_PROJECT_ID": "gphs-beta",
+    "PROFILE_CONSENT_VERSION": "2026-09-04"
+  },
   "triggers": {
     "crons": ["0 * * * *", "15 15 * * *"]
   },
@@ -15,6 +19,12 @@
       "database_name": "gunpo-school-data",
       "database_id": "ccf94115-454c-4f1f-a0d4-fa37edca4054",
       "migrations_dir": "migrations"
+    },
+    {
+      "binding": "PROFILE_DB",
+      "database_name": "gunpo-school-profiles",
+      "database_id": "5d834a95-8859-4b4f-8ba5-c3e5d9badb11",
+      "migrations_dir": "profile_migrations"
     }
   ]
 }

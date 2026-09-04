@@ -10,6 +10,7 @@ import kr.hs.gunpo.school.data.NeisRepository
 import kr.hs.gunpo.school.data.NeisState
 import kr.hs.gunpo.school.data.NoticeState
 import kr.hs.gunpo.school.data.SchoolNoticeRepository
+import kr.hs.gunpo.school.data.StudentProfileRepository
 import kr.hs.gunpo.school.notification.SchoolNotificationManager
 import kr.hs.gunpo.school.location.SchoolGeofenceManager
 import kr.hs.gunpo.school.domain.NetworkClock
@@ -30,6 +31,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = SettingsRepository(application)
     private val neisRepository = NeisRepository(application)
     private val noticeRepository = SchoolNoticeRepository(application)
+    private val studentProfileRepository = StudentProfileRepository()
 
     val settings = repository.settings.stateIn(
         viewModelScope,
@@ -140,8 +142,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _noticeState.value = noticeRepository.load(forceRefresh, NetworkClock.now().toLocalDate())
     }
 
-    fun updateProfile(name: String, number: String) = viewModelScope.launch {
-        repository.updateProfile(name, number)
+    fun updateVerifiedProfile(
+        name: String,
+        number: String,
+        firebaseIdToken: String,
+        onSuccess: (String) -> Unit,
+        onError: (String) -> Unit,
+    ) = viewModelScope.launch {
+        studentProfileRepository.save(firebaseIdToken, name, number).fold(
+            onSuccess = { profile ->
+                repository.updateProfile(profile.name, profile.studentNumber)
+                onSuccess(profile.maskedPhoneNumber)
+            },
+            onFailure = { error -> onError(error.message ?: "학생 정보를 저장하지 못했습니다.") },
+        )
     }
 
     fun updateNightStudy(day: Int, value: Int) = viewModelScope.launch {

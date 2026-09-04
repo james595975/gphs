@@ -1,6 +1,7 @@
 package kr.hs.gunpo.school.data
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.util.Log
 import kr.hs.gunpo.school.BuildConfig
 import kotlinx.coroutines.Dispatchers
@@ -62,7 +63,13 @@ class NeisRepository(private val context: Context) {
 
         try {
             if (BuildConfig.CLOUDFLARE_API_BASE_URL.isNotBlank()) {
-                loadFromServer(settings, today, forceServerSync)?.let { return@withContext it }
+                loadFromServer(
+                    settings = settings,
+                    today = today,
+                    forceSync = forceServerSync,
+                    prefs = prefs,
+                    cacheKey = "server_$cacheSuffix",
+                )?.let { return@withContext it }
             }
             val (mealJson, mealCached) = cachedOrFetch(
                 "meal_${today.year}_${today.monthValue}",
@@ -105,26 +112,60 @@ class NeisRepository(private val context: Context) {
         }
     }
 
+    /**
+     * Cloudflare에서 한 번이라도 받은 병합 응답을 즉시 반환한다.
+     * 알림은 네트워크를 기다리지 않고 이 시간표로 현재 교시를 계산할 수 있다.
+     */
+    fun loadCachedServerState(settings: UserSettings, date: LocalDate): NeisState? {
+        val cacheSuffix = "${settings.grade}_${settings.classNumber}_${date.year}_${date.monthValue}"
+        val body = context.getSharedPreferences(CACHE_NAME, Context.MODE_PRIVATE)
+            .getString("server_$cacheSuffix", null)
+            ?: return null
+        return parseServerState(body, settings, date)?.copy(isFromCache = true)
+    }
+
     private fun loadFromServer(
         settings: UserSettings,
         today: LocalDate,
         forceSync: Boolean,
-    ): NeisState? = runCatching {
-        val query = "grade=${settings.grade}&classNumber=${settings.classNumber}&year=${today.year}&month=${today.monthValue}&sync=$forceSync"
-        val connection = URL("${BuildConfig.CLOUDFLARE_API_BASE_URL}/v1/neis?$query").openConnection() as HttpURLConnection
-        val body = connection.run {
-            requestMethod = "GET"
-            connectTimeout = 10_000
-            readTimeout = 25_000
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "GunpoSchoolAndroid/0.2")
-            try {
-                if (responseCode !in 200..299) error("학교 데이터 서버 HTTP $responseCode")
-                inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-            } finally {
-                disconnect()
+        prefs: SharedPreferences,
+        cacheKey: String,
+    ): NeisState? {
+        val freshBody = runCatching {
+            val query = "grade=${settings.grade}&classNumber=${settings.classNumber}&year=${today.year}&month=${today.monthValue}&sync=$forceSync"
+            val connection = URL("${BuildConfig.CLOUDFLARE_API_BASE_URL}/v1/neis?$query").openConnection() as HttpURLConnection
+            connection.run {
+                requestMethod = "GET"
+                connectTimeout = 10_000
+                readTimeout = 25_000
+                setRequestProperty("Accept", "application/json")
+                setRequestProperty("User-Agent", "GunpoSchoolAndroid/0.2")
+                try {
+                    if (responseCode !in 200..299) error("학교 데이터 서버 HTTP $responseCode")
+                    inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                } finally {
+                    disconnect()
+                }
+            }
+        }.getOrNull()
+
+        if (freshBody != null) {
+            parseServerState(freshBody, settings, today)?.let { state ->
+                // D1 임시 시간표가 병합된 응답까지 저장해야 오프라인 알림에서도 같은 시간표를 쓸 수 있다.
+                prefs.edit().putString(cacheKey, freshBody).apply()
+                return state
             }
         }
+
+        val cachedBody = prefs.getString(cacheKey, null) ?: return null
+        return parseServerState(cachedBody, settings, today)?.copy(isFromCache = true)
+    }
+
+    private fun parseServerState(
+        body: String,
+        settings: UserSettings,
+        today: LocalDate,
+    ): NeisState? = runCatching {
         val result = JSONObject(body)
         val mealJson = result.optString("mealJson").takeIf { it.isNotBlank() } ?: return@runCatching null
         val scheduleJson = result.optString("scheduleJson").takeIf { it.isNotBlank() } ?: return@runCatching null

@@ -42,11 +42,13 @@ object SchoolNotificationManager {
         val now = NetworkClock.now()
         // 알림 리시버에서도 서버 캐시를 조회해 앱을 열지 않아도 해당 학년·반 시간표를 사용한다.
         // 매 교시마다 NEIS를 강제 호출하지 않도록 Cloudflare에는 캐시 우선 모드로 요청한다.
-        val neisState = NeisRepository(context).load(
-            settings = settings,
-            today = now.toLocalDate(),
-            forceServerSync = false,
-        )
+        val repository = NeisRepository(context)
+        val neisState = repository.loadCachedServerState(settings, now.toLocalDate())
+            ?: repository.load(
+                settings = settings,
+                today = now.toLocalDate(),
+                forceServerSync = false,
+            )
         val schedule = NotificationScheduleResolver.resolve(now.toLocalDate(), settings, neisState)
         val (title, text) = if (schedule.isAvailable) {
             notificationText(SchoolTimeline.moment(now, schedule.lessons))

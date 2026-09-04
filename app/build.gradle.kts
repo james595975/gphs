@@ -28,8 +28,8 @@ android {
         applicationId = "kr.hs.gunpo.school"
         minSdk = 33
         targetSdk = 37
-        versionCode = 16
-        versionName = "0.1.15"
+        versionCode = 17
+        versionName = "0.1.16"
         buildConfigField("String", "CLOUDFLARE_API_BASE_URL", "\"${cloudflareApiBaseUrl.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
         buildConfigField("boolean", "FIREBASE_CONFIGURED", firebaseConfigured.toString())
         buildConfigField("String", "FIREBASE_AI_MODEL", "\"gemini-3.5-flash\"")
@@ -87,6 +87,7 @@ dependencies {
     implementation("androidx.glance:glance-appwidget:1.1.1")
     implementation("com.google.android.gms:play-services-location:21.3.0")
     implementation(platform("com.google.firebase:firebase-bom:34.16.0"))
+    implementation("com.google.firebase:firebase-auth")
     implementation("com.google.firebase:firebase-ai")
     implementation("com.google.firebase:firebase-appcheck-playintegrity")
     debugImplementation("com.google.firebase:firebase-appcheck-debug")

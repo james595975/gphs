@@ -1,8 +1,14 @@
 import * as cheerio from "cheerio";
+import {decodeProtectedHeader, importX509, jwtVerify, type JWTPayload} from "jose";
 
 interface Env {
   DB: D1Database;
+  PROFILE_DB: D1Database;
   NEIS_API_KEY: string;
+  FIREBASE_PROJECT_ID: string;
+  PROFILE_ENCRYPTION_KEY: string;
+  PROFILE_HASH_KEY: string;
+  PROFILE_CONSENT_VERSION: string;
 }
 
 type Notice = {
@@ -52,6 +58,31 @@ const CACHE_MS = 30 * 60 * 1000;
 const NOTICE_SYNC_COOLDOWN_MS = 60 * 1000;
 const HOURLY_SYNC_CRON = "0 * * * *";
 const DAILY_TIMETABLE_SYNC_CRON = "15 15 * * *"; // 매일 00:15 Asia/Seoul
+const FIREBASE_CERTS_URL =
+  "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com";
+const PROFILE_RETENTION_MS = 365 * 24 * 60 * 60 * 1000;
+
+class HttpError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+  }
+}
+
+type FirebasePhoneIdentity = {
+  subject: string;
+  phoneNumber: string;
+};
+
+type StudentProfilePayload = {
+  phoneNumber: string;
+  name: string;
+  studentNumber: string;
+  grade: number;
+  classNumber: number;
+  seatNumber: number;
+};
+
+let firebaseCertCache: {certificates: Record<string, string>; expiresAt: number} | null = null;
 
 const noticeSources = [
   {
@@ -67,15 +98,158 @@ const noticeSources = [
 ];
 
 function json(data: unknown, status = 200): Response {
+  const headers = {
+    "cache-control": "no-store",
+    "access-control-allow-origin": "*",
+    "access-control-allow-headers": "authorization,content-type",
+    "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS",
+  };
+  if (status === 204) return new Response(null, {status, headers});
   return Response.json(data, {
     status,
-    headers: {
-      "cache-control": "no-store",
-      "access-control-allow-origin": "*",
-      "access-control-allow-headers": "content-type",
-      "access-control-allow-methods": "GET,POST,OPTIONS",
-    },
+    headers,
   });
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  bytes.forEach((value) => { binary += String.fromCharCode(value); });
+  return btoa(binary);
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+async function hmac(env: Env, value: string): Promise<string> {
+  if (!env.PROFILE_HASH_KEY) throw new Error("PROFILE_HASH_KEY secret is missing");
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(env.PROFILE_HASH_KEY),
+    {name: "HMAC", hash: "SHA-256"},
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value));
+  return bytesToBase64(new Uint8Array(signature));
+}
+
+async function profileEncryptionKey(env: Env): Promise<CryptoKey> {
+  if (!env.PROFILE_ENCRYPTION_KEY) throw new Error("PROFILE_ENCRYPTION_KEY secret is missing");
+  const bytes = base64ToBytes(env.PROFILE_ENCRYPTION_KEY);
+  if (bytes.byteLength !== 32) throw new Error("PROFILE_ENCRYPTION_KEY must be a base64-encoded 32-byte key");
+  return crypto.subtle.importKey("raw", bytes, {name: "AES-GCM"}, false, ["encrypt", "decrypt"]);
+}
+
+async function encryptProfile(env: Env, profile: StudentProfilePayload): Promise<{ciphertext: string; iv: string}> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt(
+    {name: "AES-GCM", iv},
+    await profileEncryptionKey(env),
+    new TextEncoder().encode(JSON.stringify(profile)),
+  );
+  return {ciphertext: bytesToBase64(new Uint8Array(ciphertext)), iv: bytesToBase64(iv)};
+}
+
+async function decryptProfile(env: Env, ciphertext: string, iv: string): Promise<StudentProfilePayload> {
+  const plaintext = await crypto.subtle.decrypt(
+    {name: "AES-GCM", iv: base64ToBytes(iv)},
+    await profileEncryptionKey(env),
+    base64ToBytes(ciphertext),
+  );
+  return JSON.parse(new TextDecoder().decode(plaintext)) as StudentProfilePayload;
+}
+
+async function firebaseCertificates(): Promise<Record<string, string>> {
+  if (firebaseCertCache && firebaseCertCache.expiresAt > Date.now()) return firebaseCertCache.certificates;
+  const response = await fetch(FIREBASE_CERTS_URL, {signal: AbortSignal.timeout(10_000)});
+  if (!response.ok) throw new Error(`Firebase certificate HTTP ${response.status}`);
+  const certificates = await response.json<Record<string, string>>();
+  const maxAge = Number(response.headers.get("cache-control")?.match(/max-age=(\d+)/)?.[1] || 300);
+  firebaseCertCache = {certificates, expiresAt: Date.now() + Math.max(maxAge - 30, 30) * 1000};
+  return certificates;
+}
+
+function firebaseClaim(payload: JWTPayload): {sign_in_provider?: unknown} {
+  return typeof payload.firebase === "object" && payload.firebase !== null
+    ? payload.firebase as {sign_in_provider?: unknown}
+    : {};
+}
+
+async function requireFirebasePhoneIdentity(
+  request: Request,
+  env: Env,
+  maximumAuthenticationAgeSeconds?: number,
+): Promise<FirebasePhoneIdentity> {
+  const authorization = request.headers.get("authorization") || "";
+  const match = authorization.match(/^Bearer\s+(.+)$/i);
+  if (!match) throw new HttpError(401, "SMS 인증이 필요합니다.");
+  if (!env.FIREBASE_PROJECT_ID) throw new Error("FIREBASE_PROJECT_ID is missing");
+
+  const token = match[1];
+  let header: ReturnType<typeof decodeProtectedHeader>;
+  try {
+    header = decodeProtectedHeader(token);
+  } catch {
+    throw new HttpError(401, "유효하지 않은 인증 토큰입니다.");
+  }
+  if (header.alg !== "RS256" || !header.kid) throw new HttpError(401, "유효하지 않은 인증 토큰입니다.");
+  const certificate = (await firebaseCertificates())[header.kid];
+  if (!certificate) throw new HttpError(401, "만료되었거나 알 수 없는 인증 토큰입니다.");
+
+  let payload: JWTPayload;
+  try {
+    payload = (await jwtVerify(token, await importX509(certificate, "RS256"), {
+      algorithms: ["RS256"],
+      audience: env.FIREBASE_PROJECT_ID,
+      issuer: `https://securetoken.google.com/${env.FIREBASE_PROJECT_ID}`,
+      clockTolerance: 30,
+    })).payload;
+  } catch {
+    throw new HttpError(401, "SMS 인증이 만료되었습니다. 다시 인증해 주세요.");
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const phoneNumber = typeof payload.phone_number === "string" ? payload.phone_number : "";
+  if (!payload.sub || payload.sub.length > 128 || !payload.iat || payload.iat > now + 30 ||
+      typeof payload.auth_time !== "number" || payload.auth_time > now + 30 ||
+      firebaseClaim(payload).sign_in_provider !== "phone" || !/^\+[1-9]\d{7,14}$/.test(phoneNumber)) {
+    throw new HttpError(401, "SMS로 확인된 전화번호가 없습니다.");
+  }
+  if (maximumAuthenticationAgeSeconds !== undefined && now - payload.auth_time > maximumAuthenticationAgeSeconds) {
+    throw new HttpError(401, "SMS 인증 시간이 지났습니다. 다시 인증해 주세요.");
+  }
+  return {subject: payload.sub, phoneNumber};
+}
+
+function parseStudentProfile(body: unknown): Omit<StudentProfilePayload, "phoneNumber"> & {
+  consent: boolean;
+  consentVersion: string;
+} {
+  if (typeof body !== "object" || body === null) throw new HttpError(400, "요청 형식이 올바르지 않습니다.");
+  const value = body as Record<string, unknown>;
+  const name = typeof value.name === "string" ? value.name.trim() : "";
+  const studentNumber = typeof value.studentNumber === "string" ? value.studentNumber.trim() : "";
+  if (!/^[\p{L}\p{M} .'-]{1,20}$/u.test(name)) {
+    throw new HttpError(400, "이름은 문자 기준 1~20자로 입력해 주세요.");
+  }
+  if (!/^\d{5}$/.test(studentNumber)) throw new HttpError(400, "학번 5자리를 확인해 주세요.");
+  const grade = Number(studentNumber.slice(0, 1));
+  const classNumber = Number(studentNumber.slice(1, 3));
+  const seatNumber = Number(studentNumber.slice(3, 5));
+  if (grade < 1 || grade > 3 || classNumber < 1 || classNumber > 20 || seatNumber < 1 || seatNumber > 99) {
+    throw new HttpError(400, "학번 5자리를 확인해 주세요.");
+  }
+  return {
+    name,
+    studentNumber,
+    grade,
+    classNumber,
+    seatNumber,
+    consent: value.consent === true,
+    consentVersion: typeof value.consentVersion === "string" ? value.consentVersion : "",
+  };
 }
 
 async function getCache<T>(env: Env, key: string): Promise<CacheEntry<T> | null> {
@@ -571,6 +745,121 @@ function intParam(url: URL, name: string): number {
   return Number(url.searchParams.get(name));
 }
 
+function maskedPhoneNumber(phoneNumber: string): string {
+  if (phoneNumber.startsWith("+82") && phoneNumber.length >= 12) {
+    const local = `0${phoneNumber.slice(3)}`;
+    return `${local.slice(0, 3)}-****-${local.slice(-4)}`;
+  }
+  return `${phoneNumber.slice(0, 3)}****${phoneNumber.slice(-4)}`;
+}
+
+async function profileSubjectHash(env: Env, subject: string): Promise<string> {
+  return hmac(env, `firebase:${subject}`);
+}
+
+async function putStudentProfile(request: Request, env: Env): Promise<Response> {
+  const identity = await requireFirebasePhoneIdentity(request, env, 10 * 60);
+  const input = parseStudentProfile(await request.json<unknown>().catch(() => null));
+  if (!env.PROFILE_CONSENT_VERSION || !input.consent || input.consentVersion !== env.PROFILE_CONSENT_VERSION) {
+    throw new HttpError(400, "개인정보 수집·이용 및 국외 이전 동의가 필요합니다.");
+  }
+
+  const now = Date.now();
+  const profile: StudentProfilePayload = {
+    phoneNumber: identity.phoneNumber,
+    name: input.name,
+    studentNumber: input.studentNumber,
+    grade: input.grade,
+    classNumber: input.classNumber,
+    seatNumber: input.seatNumber,
+  };
+  const [subjectHash, phoneHash, encrypted] = await Promise.all([
+    profileSubjectHash(env, identity.subject),
+    hmac(env, `phone:${identity.phoneNumber}`),
+    encryptProfile(env, profile),
+  ]);
+  await env.PROFILE_DB.prepare(
+    `INSERT INTO verified_student_profiles(
+       provider_subject_hash, verification_provider, verification_reference_hash,
+       profile_ciphertext, profile_iv, encryption_key_version, consent_version,
+       consented_at, verified_at, expires_at, created_at, updated_at
+     ) VALUES (?1, 'firebase_sms', ?2, ?3, ?4, 1, ?5, ?6, ?6, ?7, ?6, ?6)
+     ON CONFLICT(provider_subject_hash) DO UPDATE SET
+       verification_provider = excluded.verification_provider,
+       verification_reference_hash = excluded.verification_reference_hash,
+       profile_ciphertext = excluded.profile_ciphertext,
+       profile_iv = excluded.profile_iv,
+       encryption_key_version = excluded.encryption_key_version,
+       consent_version = excluded.consent_version,
+       consented_at = excluded.consented_at,
+       verified_at = excluded.verified_at,
+       expires_at = excluded.expires_at,
+       updated_at = excluded.updated_at`,
+  ).bind(
+    subjectHash,
+    phoneHash,
+    encrypted.ciphertext,
+    encrypted.iv,
+    input.consentVersion,
+    now,
+    now + PROFILE_RETENTION_MS,
+  ).run();
+
+  return json({
+    saved: true,
+    profile: {
+      name: profile.name,
+      studentNumber: profile.studentNumber,
+      phoneNumberMasked: maskedPhoneNumber(profile.phoneNumber),
+    },
+    expiresAt: now + PROFILE_RETENTION_MS,
+  });
+}
+
+async function getStudentProfile(request: Request, env: Env): Promise<Response> {
+  const identity = await requireFirebasePhoneIdentity(request, env);
+  const subjectHash = await profileSubjectHash(env, identity.subject);
+  const row = await env.PROFILE_DB.prepare(
+    `SELECT profile_ciphertext, profile_iv, consent_version, consented_at, verified_at, expires_at
+     FROM verified_student_profiles WHERE provider_subject_hash = ?1`,
+  ).bind(subjectHash).first<{
+    profile_ciphertext: string;
+    profile_iv: string;
+    consent_version: string;
+    consented_at: number;
+    verified_at: number;
+    expires_at: number;
+  }>();
+  if (!row) throw new HttpError(404, "저장된 학생 정보가 없습니다.");
+  if (row.expires_at <= Date.now()) {
+    await env.PROFILE_DB.prepare(
+      "DELETE FROM verified_student_profiles WHERE provider_subject_hash = ?1",
+    ).bind(subjectHash).run();
+    throw new HttpError(404, "보관 기간이 끝나 학생 정보를 삭제했습니다.");
+  }
+  const profile = await decryptProfile(env, row.profile_ciphertext, row.profile_iv);
+  return json({
+    profile: {
+      name: profile.name,
+      studentNumber: profile.studentNumber,
+      phoneNumberMasked: maskedPhoneNumber(profile.phoneNumber),
+    },
+    consentVersion: row.consent_version,
+    consentedAt: row.consented_at,
+    verifiedAt: row.verified_at,
+    expiresAt: row.expires_at,
+  });
+}
+
+async function deleteStudentProfile(request: Request, env: Env): Promise<Response> {
+  const identity = await requireFirebasePhoneIdentity(request, env);
+  const subjectHash = await profileSubjectHash(env, identity.subject);
+  await env.PROFILE_DB.prepare(
+    "DELETE FROM verified_student_profiles WHERE provider_subject_hash = ?1",
+  ).bind(subjectHash).run();
+  return json({deleted: true});
+}
+
 async function handleRequest(request: Request, env: Env): Promise<Response> {
   if (request.method === "OPTIONS") return json({}, 204);
   const url = new URL(request.url);
@@ -587,6 +876,12 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       timeZone: "Asia/Seoul",
       date: `${seoul.year}-${String(seoul.month).padStart(2, "0")}-${String(seoul.day).padStart(2, "0")}`,
     });
+  }
+
+  if (url.pathname === "/v1/profile") {
+    if (request.method === "PUT") return putStudentProfile(request, env);
+    if (request.method === "GET") return getStudentProfile(request, env);
+    if (request.method === "DELETE") return deleteStudentProfile(request, env);
   }
 
   if (request.method === "GET" && url.pathname === "/v1/notices") {
@@ -661,6 +956,7 @@ export default {
       return await handleRequest(request, env);
     } catch (error) {
       console.error(error);
+      if (error instanceof HttpError) return json({error: error.message}, error.status);
       return json({error: "학교 데이터를 처리하지 못했습니다."}, 500);
     }
   },

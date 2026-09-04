@@ -70,6 +70,7 @@ import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
@@ -126,6 +127,11 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.google.firebase.FirebaseException
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.PhoneAuthCredential
+import com.google.firebase.auth.PhoneAuthOptions
+import com.google.firebase.auth.PhoneAuthProvider
 import kr.hs.gunpo.school.MainViewModel
 import kr.hs.gunpo.school.data.AcademicEvent
 import kr.hs.gunpo.school.data.EighthPeriodMode
@@ -138,6 +144,7 @@ import kr.hs.gunpo.school.data.NoticeState
 import kr.hs.gunpo.school.data.SchoolData
 import kr.hs.gunpo.school.data.SupplementaryCourseCatalog
 import kr.hs.gunpo.school.data.SupplementaryCourseGroup
+import kr.hs.gunpo.school.data.SmsRequestLimiter
 import kr.hs.gunpo.school.data.UserSettings
 import kr.hs.gunpo.school.domain.AcademicScheduleKind
 import kr.hs.gunpo.school.domain.AcademicSchedulePolicy
@@ -163,6 +170,7 @@ import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.time.temporal.TemporalAdjusters
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 
 private enum class MainTab(val label: String, val icon: ImageVector) {
     HOME("홈", Icons.Default.Home),
@@ -1342,8 +1350,51 @@ private fun ProfileSettings(
 ) {
     var name by remember(settings.studentName) { mutableStateOf(settings.studentName) }
     var number by remember(settings.studentNumber) { mutableStateOf(settings.studentNumber) }
+    var phoneNumber by remember { mutableStateOf("") }
+    var verificationCode by remember { mutableStateOf("") }
+    var verificationId by remember { mutableStateOf<String?>(null) }
+    var verifiedPhoneNumber by remember { mutableStateOf<String?>(null) }
+    var consented by remember { mutableStateOf(false) }
+    var isSendingCode by remember { mutableStateOf(false) }
+    var isVerifyingCode by remember { mutableStateOf(false) }
+    var isSaving by remember { mutableStateOf(false) }
+    var authenticationError by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    val activity = context as? Activity
+    val firebaseAuth = remember { FirebaseAuth.getInstance() }
+    val smsRequestLimiter = remember(context) { SmsRequestLimiter(context) }
+    var smsRequestLimit by remember { mutableStateOf(smsRequestLimiter.status()) }
     val parsedStudentNumber = parseStudentNumber(number)
-    val canSave = name.isNotBlank() && parsedStudentNumber != null
+    val normalizedPhoneNumber = normalizeKoreanPhoneNumber(phoneNumber)
+    val canSave = name.isNotBlank() && parsedStudentNumber != null &&
+        verifiedPhoneNumber == normalizedPhoneNumber && consented && !isSaving
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            smsRequestLimit = smsRequestLimiter.status()
+            delay(1_000)
+        }
+    }
+
+    fun signInWithPhoneCredential(credential: PhoneAuthCredential) {
+        isVerifyingCode = true
+        authenticationError = null
+        firebaseAuth.signInWithCredential(credential).addOnCompleteListener { task ->
+            isVerifyingCode = false
+            if (task.isSuccessful) {
+                val authenticatedPhone = task.result?.user?.phoneNumber
+                if (authenticatedPhone != null) {
+                    phoneNumber = koreanLocalPhoneNumber(authenticatedPhone)
+                    verifiedPhoneNumber = authenticatedPhone
+                    verificationCode = ""
+                } else {
+                    authenticationError = "인증된 전화번호를 확인하지 못했습니다."
+                }
+            } else {
+                authenticationError = "인증코드가 올바르지 않거나 만료되었습니다."
+            }
+        }
+    }
 
     Column(Modifier.fillMaxSize().padding(padding)) {
         NavigationHeader(
@@ -1356,7 +1407,7 @@ private fun ProfileSettings(
         ) {
             item {
                 Text(
-                    "저장한 학생 정보는 이 기기에 저장되며 시간표·급식 등 NEIS 정보 조회에 사용됩니다.",
+                    "이름과 학번은 사용자가 입력한 값이며, SMS 인증은 전화번호 소유 여부만 확인합니다.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 14.sp,
                 )
@@ -1392,21 +1443,206 @@ private fun ProfileSettings(
                 }
             }
             item {
+                SettingsSection("개인정보 수집·이용 동의") {
+                    Row(
+                        Modifier.fillMaxWidth().clickable { consented = !consented }.padding(10.dp),
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        Checkbox(checked = consented, onCheckedChange = { consented = it })
+                        Text(
+                            "이름·학번·전화번호를 서비스 제공 목적으로 수집하고 암호화하여 Cloudflare D1(APAC)에 최대 1년간 보관하는 것에 동의합니다. 전화번호는 SMS 인증을 위해 Google Firebase로 전송됩니다.",
+                            modifier = Modifier.padding(top = 10.dp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 13.sp,
+                        )
+                    }
+                }
+            }
+            item {
+                SettingsSection("휴대전화 SMS 인증") {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        OutlinedTextField(
+                            value = phoneNumber,
+                            onValueChange = { value ->
+                                phoneNumber = value.filter(Char::isDigit).take(11)
+                                if (verifiedPhoneNumber != normalizeKoreanPhoneNumber(phoneNumber)) {
+                                    verifiedPhoneNumber = null
+                                }
+                                verificationId = null
+                                verificationCode = ""
+                                authenticationError = null
+                            },
+                            label = { Text("휴대전화 번호") },
+                            supportingText = { Text("본인 명의 여부가 아닌 이 번호의 SMS 수신 가능 여부를 확인합니다.") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Button(
+                            onClick = {
+                                val targetPhoneNumber = normalizedPhoneNumber
+                                if (targetPhoneNumber == null || activity == null) {
+                                    authenticationError = "010으로 시작하는 휴대전화 번호를 확인해 주세요."
+                                    return@Button
+                                }
+                                val latestLimit = smsRequestLimiter.status()
+                                if (!latestLimit.canRequest) {
+                                    smsRequestLimit = latestLimit
+                                    authenticationError = smsRequestLimitMessage(latestLimit)
+                                    return@Button
+                                }
+                                smsRequestLimit = smsRequestLimiter.recordRequest()
+                                isSendingCode = true
+                                authenticationError = null
+                                val callbacks = object : PhoneAuthProvider.OnVerificationStateChangedCallbacks() {
+                                    override fun onVerificationCompleted(credential: PhoneAuthCredential) {
+                                        isSendingCode = false
+                                        signInWithPhoneCredential(credential)
+                                    }
+
+                                    override fun onVerificationFailed(exception: FirebaseException) {
+                                        isSendingCode = false
+                                        authenticationError = firebasePhoneAuthenticationError(exception)
+                                    }
+
+                                    override fun onCodeSent(
+                                        id: String,
+                                        token: PhoneAuthProvider.ForceResendingToken,
+                                    ) {
+                                        verificationId = id
+                                        isSendingCode = false
+                                    }
+                                }
+                                firebaseAuth.setLanguageCode("ko")
+                                PhoneAuthProvider.verifyPhoneNumber(
+                                    PhoneAuthOptions.newBuilder(firebaseAuth)
+                                        .setPhoneNumber(targetPhoneNumber)
+                                        .setTimeout(60L, TimeUnit.SECONDS)
+                                        .setActivity(activity)
+                                        .setCallbacks(callbacks)
+                                        .build(),
+                                )
+                            },
+                            enabled = consented && normalizedPhoneNumber != null && smsRequestLimit.canRequest &&
+                                !isSendingCode && !isVerifyingCode,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                when {
+                                    isSendingCode -> "전송 중…"
+                                    smsRequestLimit.retryAfterSeconds > 0 -> "${smsRequestLimit.retryAfterSeconds}초 후 재전송"
+                                    smsRequestLimit.remainingToday == 0 -> "오늘 요청 한도 초과"
+                                    else -> "인증코드 받기"
+                                },
+                            )
+                        }
+                        Text(
+                            "베타 보호 한도 · 오늘 ${smsRequestLimit.remainingToday}회 남음 · 요청 후 60초 대기",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 12.sp,
+                        )
+                        if (verificationId != null && verifiedPhoneNumber == null) {
+                            OutlinedTextField(
+                                value = verificationCode,
+                                onValueChange = { verificationCode = it.filter(Char::isDigit).take(6) },
+                                label = { Text("인증코드 6자리") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Button(
+                                onClick = {
+                                    val id = verificationId ?: return@Button
+                                    signInWithPhoneCredential(PhoneAuthProvider.getCredential(id, verificationCode))
+                                },
+                                enabled = verificationCode.length == 6 && !isVerifyingCode,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(if (isVerifyingCode) "확인 중…" else "인증코드 확인")
+                            }
+                        }
+                        if (verifiedPhoneNumber != null) {
+                            Text(
+                                "SMS 인증 완료 · ${maskedKoreanPhoneNumber(verifiedPhoneNumber.orEmpty())}",
+                                color = SchoolGreen,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                        authenticationError?.let { error ->
+                            Text(error, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+                        }
+                    }
+                }
+            }
+            item {
                 Button(
                     onClick = {
-                        viewModel.updateProfile(
-                            name,
-                            number,
-                        )
-                        if (isInitialSetup) onInitialSetupComplete?.invoke() else onBack?.invoke()
+                        val user = firebaseAuth.currentUser
+                        if (user == null || user.phoneNumber != verifiedPhoneNumber) {
+                            authenticationError = "SMS 인증을 다시 진행해 주세요."
+                            return@Button
+                        }
+                        isSaving = true
+                        authenticationError = null
+                        user.getIdToken(true).addOnCompleteListener { tokenTask ->
+                            val token = tokenTask.result?.token
+                            if (!tokenTask.isSuccessful || token == null) {
+                                isSaving = false
+                                authenticationError = "인증 정보를 갱신하지 못했습니다. 다시 인증해 주세요."
+                                return@addOnCompleteListener
+                            }
+                            viewModel.updateVerifiedProfile(
+                                name = name,
+                                number = number,
+                                firebaseIdToken = token,
+                                onSuccess = { maskedPhone ->
+                                    isSaving = false
+                                    Toast.makeText(context, "$maskedPhone 인증 정보를 저장했습니다.", Toast.LENGTH_SHORT).show()
+                                    if (isInitialSetup) onInitialSetupComplete?.invoke() else onBack?.invoke()
+                                },
+                                onError = { error ->
+                                    isSaving = false
+                                    authenticationError = error
+                                },
+                            )
+                        }
                     },
                     enabled = canSave,
                     modifier = Modifier.fillMaxWidth().height(52.dp),
                 ) {
-                    Text(if (isInitialSetup) "시작하기" else "저장")
+                    Text(if (isSaving) "저장 중…" else if (isInitialSetup) "인증하고 시작하기" else "인증하고 저장")
                 }
             }
         }
+    }
+}
+
+private fun normalizeKoreanPhoneNumber(value: String): String? {
+    val digits = value.filter(Char::isDigit)
+    return if (digits.matches(Regex("010\\d{8}"))) "+82${digits.drop(1)}" else null
+}
+
+private fun koreanLocalPhoneNumber(value: String): String =
+    if (value.startsWith("+82")) "0${value.drop(3)}" else value.filter(Char::isDigit)
+
+private fun maskedKoreanPhoneNumber(value: String): String {
+    val local = koreanLocalPhoneNumber(value)
+    return if (local.length == 11) "${local.take(3)}-****-${local.takeLast(4)}" else "인증됨"
+}
+
+private fun smsRequestLimitMessage(limit: kr.hs.gunpo.school.data.SmsRequestLimit): String = when {
+    limit.remainingToday == 0 -> "오늘 인증문자 요청 한도 5회를 모두 사용했습니다. 내일 다시 시도해 주세요."
+    limit.retryAfterSeconds > 0 -> "${limit.retryAfterSeconds}초 후에 인증문자를 다시 요청할 수 있습니다."
+    else -> "인증문자를 다시 요청할 수 있습니다."
+}
+
+private fun firebasePhoneAuthenticationError(exception: FirebaseException): String {
+    val detail = listOfNotNull(exception.message, exception.localizedMessage).joinToString(" ").uppercase()
+    return when {
+        "BILLING_NOT_ENABLED" in detail ->
+            "Firebase 결제가 활성화되지 않았습니다. 관리자에게 결제 계정 연결을 요청해 주세요."
+        "TOO_MANY_REQUESTS" in detail || "QUOTA_EXCEEDED" in detail ->
+            "인증문자 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요."
+        "INVALID_PHONE_NUMBER" in detail -> "휴대전화 번호를 확인해 주세요."
+        else -> exception.localizedMessage ?: "인증문자를 보내지 못했습니다. 잠시 후 다시 시도해 주세요."
     }
 }
 

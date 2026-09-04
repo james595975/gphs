@@ -9,7 +9,8 @@
     "db:migrate:remote": "wrangler d1 migrations apply gunpo-school-data --remote"
   },
   "dependencies": {
-    "cheerio": "1.2.0"
+    "cheerio": "1.2.0",
+    "jose": "^6.2.10"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260724.1",
