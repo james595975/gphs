@@ -12,7 +12,28 @@
           "package_name": "kr.hs.gunpo.school"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "991014325791-4fusgmtibsp6h4otv7cii8bu8qvcn788.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "kr.hs.gunpo.school",
+            "certificate_hash": "8b06366e5be366d4c16ffa731ccebceb40d89f28"
+          }
+        },
+        {
+          "client_id": "991014325791-un15odfhq55jic3vieu64h4rsu5vlnop.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "kr.hs.gunpo.school",
+            "certificate_hash": "21cd3fa7330f6526428d77cef016fa6891eefbf2"
+          }
+        },
+        {
+          "client_id": "991014325791-4f0tvpcbgemr743ec8uhmvl0du18e4dr.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyBy6Caq3OvyOY0V2FZQ5aYix2KVobU0PoY"
@@ -20,7 +41,12 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "991014325791-4f0tvpcbgemr743ec8uhmvl0du18e4dr.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
         }
       }
     }

@@ -1,5 +1,5 @@
 import * as cheerio from "cheerio";
-import {decodeProtectedHeader, importX509, jwtVerify, type JWTPayload} from "jose";
+import {decodeProtectedHeader, importPKCS8, importX509, jwtVerify, SignJWT, type JWTPayload} from "jose";
 
 interface Env {
   DB: D1Database;
@@ -9,6 +9,14 @@ interface Env {
   PROFILE_ENCRYPTION_KEY: string;
   PROFILE_HASH_KEY: string;
   PROFILE_CONSENT_VERSION: string;
+  ACCOUNT_CONSENT_VERSION: string;
+  FIREBASE_WEB_API_KEY: string;
+  FIREBASE_SERVICE_ACCOUNT_EMAIL: string;
+  FIREBASE_SERVICE_ACCOUNT_PRIVATE_KEY: string;
+  KAKAO_REST_API_KEY: string;
+  KAKAO_CLIENT_SECRET: string;
+  NAVER_CLIENT_ID: string;
+  NAVER_CLIENT_SECRET: string;
 }
 
 type Notice = {
@@ -68,9 +76,13 @@ class HttpError extends Error {
   }
 }
 
-type FirebasePhoneIdentity = {
+type FirebaseIdentity = {
   subject: string;
-  phoneNumber: string;
+  phoneNumber?: string;
+  email?: string;
+  emailVerified: boolean;
+  authenticationTime: number;
+  signInProvider?: string;
 };
 
 type StudentProfilePayload = {
@@ -80,6 +92,11 @@ type StudentProfilePayload = {
   grade: number;
   classNumber: number;
   seatNumber: number;
+};
+
+type StudentAccountPayload = {
+  loginId: string;
+  email: string;
 };
 
 let firebaseCertCache: {certificates: Record<string, string>; expiresAt: number} | null = null;
@@ -161,6 +178,53 @@ async function decryptProfile(env: Env, ciphertext: string, iv: string): Promise
   return JSON.parse(new TextDecoder().decode(plaintext)) as StudentProfilePayload;
 }
 
+async function encryptAccount(env: Env, account: StudentAccountPayload): Promise<{ciphertext: string; iv: string}> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt(
+    {name: "AES-GCM", iv},
+    await profileEncryptionKey(env),
+    new TextEncoder().encode(JSON.stringify(account)),
+  );
+  return {ciphertext: bytesToBase64(new Uint8Array(ciphertext)), iv: bytesToBase64(iv)};
+}
+
+async function decryptAccount(env: Env, ciphertext: string, iv: string): Promise<StudentAccountPayload> {
+  const plaintext = await crypto.subtle.decrypt(
+    {name: "AES-GCM", iv: base64ToBytes(iv)},
+    await profileEncryptionKey(env),
+    base64ToBytes(ciphertext),
+  );
+  return JSON.parse(new TextDecoder().decode(plaintext)) as StudentAccountPayload;
+}
+
+async function encryptSecretText(env: Env, value: string): Promise<{ciphertext: string; iv: string}> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt(
+    {name: "AES-GCM", iv},
+    await profileEncryptionKey(env),
+    new TextEncoder().encode(value),
+  );
+  return {ciphertext: bytesToBase64(new Uint8Array(ciphertext)), iv: bytesToBase64(iv)};
+}
+
+async function decryptSecretText(env: Env, ciphertext: string, iv: string): Promise<string> {
+  const plaintext = await crypto.subtle.decrypt(
+    {name: "AES-GCM", iv: base64ToBytes(iv)},
+    await profileEncryptionKey(env),
+    base64ToBytes(ciphertext),
+  );
+  return new TextDecoder().decode(plaintext);
+}
+
+function randomUrlToken(byteLength = 32): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(byteLength));
+  return bytesToBase64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
+}
+
 async function firebaseCertificates(): Promise<Record<string, string>> {
   if (firebaseCertCache && firebaseCertCache.expiresAt > Date.now()) return firebaseCertCache.certificates;
   const response = await fetch(FIREBASE_CERTS_URL, {signal: AbortSignal.timeout(10_000)});
@@ -177,14 +241,14 @@ function firebaseClaim(payload: JWTPayload): {sign_in_provider?: unknown} {
     : {};
 }
 
-async function requireFirebasePhoneIdentity(
+async function requireFirebaseIdentity(
   request: Request,
   env: Env,
   maximumAuthenticationAgeSeconds?: number,
-): Promise<FirebasePhoneIdentity> {
+): Promise<FirebaseIdentity> {
   const authorization = request.headers.get("authorization") || "";
   const match = authorization.match(/^Bearer\s+(.+)$/i);
-  if (!match) throw new HttpError(401, "SMS 인증이 필요합니다.");
+  if (!match) throw new HttpError(401, "로그인이 필요합니다.");
   if (!env.FIREBASE_PROJECT_ID) throw new Error("FIREBASE_PROJECT_ID is missing");
 
   const token = match[1];
@@ -207,20 +271,28 @@ async function requireFirebasePhoneIdentity(
       clockTolerance: 30,
     })).payload;
   } catch {
-    throw new HttpError(401, "SMS 인증이 만료되었습니다. 다시 인증해 주세요.");
+    throw new HttpError(401, "로그인이 만료되었습니다. 다시 로그인해 주세요.");
   }
 
   const now = Math.floor(Date.now() / 1000);
   const phoneNumber = typeof payload.phone_number === "string" ? payload.phone_number : "";
   if (!payload.sub || payload.sub.length > 128 || !payload.iat || payload.iat > now + 30 ||
-      typeof payload.auth_time !== "number" || payload.auth_time > now + 30 ||
-      firebaseClaim(payload).sign_in_provider !== "phone" || !/^\+[1-9]\d{7,14}$/.test(phoneNumber)) {
-    throw new HttpError(401, "SMS로 확인된 전화번호가 없습니다.");
+      typeof payload.auth_time !== "number" || payload.auth_time > now + 30) {
+    throw new HttpError(401, "유효하지 않은 로그인 정보입니다.");
   }
   if (maximumAuthenticationAgeSeconds !== undefined && now - payload.auth_time > maximumAuthenticationAgeSeconds) {
-    throw new HttpError(401, "SMS 인증 시간이 지났습니다. 다시 인증해 주세요.");
+    throw new HttpError(401, "보안을 위해 다시 로그인해 주세요.");
   }
-  return {subject: payload.sub, phoneNumber};
+  return {
+    subject: payload.sub,
+    phoneNumber: /^\+[1-9]\d{7,14}$/.test(phoneNumber) ? phoneNumber : undefined,
+    email: typeof payload.email === "string" ? payload.email.trim().toLowerCase() : undefined,
+    emailVerified: payload.email_verified === true,
+    authenticationTime: payload.auth_time,
+    signInProvider: typeof firebaseClaim(payload).sign_in_provider === "string"
+      ? firebaseClaim(payload).sign_in_provider as string
+      : undefined,
+  };
 }
 
 function parseStudentProfile(body: unknown): Omit<StudentProfilePayload, "phoneNumber"> & {
@@ -757,8 +829,374 @@ async function profileSubjectHash(env: Env, subject: string): Promise<string> {
   return hmac(env, `firebase:${subject}`);
 }
 
+function normalizeLoginId(value: unknown): string {
+  const loginId = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (!/^[a-z0-9][a-z0-9_]{3,19}$/.test(loginId)) {
+    throw new HttpError(400, "아이디는 영문 소문자·숫자·밑줄을 사용해 4~20자로 입력해 주세요.");
+  }
+  return loginId;
+}
+
+function normalizeEmail(value: unknown): string {
+  const email = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new HttpError(400, "이메일 주소를 확인해 주세요.");
+  }
+  return email;
+}
+
+async function enforceAuthRateLimit(
+  request: Request,
+  env: Env,
+  action: string,
+  identifier: string,
+  maximumRequests: number,
+): Promise<void> {
+  const now = Date.now();
+  const windowMs = 15 * 60 * 1000;
+  const ip = request.headers.get("cf-connecting-ip") || "unknown";
+  const rateKey = await hmac(env, `auth-rate:${action}:${ip}:${identifier}`);
+  const row = await env.PROFILE_DB.prepare(
+    "SELECT window_started_at, request_count, blocked_until FROM auth_rate_limits WHERE rate_key = ?1",
+  ).bind(rateKey).first<{window_started_at: number; request_count: number; blocked_until: number}>();
+  if (row?.blocked_until && row.blocked_until > now) {
+    throw new HttpError(429, "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.");
+  }
+  const inWindow = row && now - row.window_started_at < windowMs;
+  const count = inWindow ? row.request_count + 1 : 1;
+  const startedAt = inWindow ? row.window_started_at : now;
+  const blockedUntil = count > maximumRequests ? now + windowMs : 0;
+  await env.PROFILE_DB.prepare(
+    `INSERT INTO auth_rate_limits(rate_key, window_started_at, request_count, blocked_until, updated_at)
+     VALUES (?1, ?2, ?3, ?4, ?5)
+     ON CONFLICT(rate_key) DO UPDATE SET
+       window_started_at = excluded.window_started_at,
+       request_count = excluded.request_count,
+       blocked_until = excluded.blocked_until,
+       updated_at = excluded.updated_at`,
+  ).bind(rateKey, startedAt, count, blockedUntil, now).run();
+  if (blockedUntil) throw new HttpError(429, "요청이 너무 많습니다. 15분 후 다시 시도해 주세요.");
+}
+
+async function firebaseIdentityToolkit(
+  env: Env,
+  endpoint: string,
+  body: Record<string, unknown>,
+): Promise<{ok: boolean; value: Record<string, unknown>}> {
+  if (!env.FIREBASE_WEB_API_KEY) throw new Error("FIREBASE_WEB_API_KEY secret is missing");
+  const response = await fetch(
+    `https://identitytoolkit.googleapis.com/v1/${endpoint}?key=${encodeURIComponent(env.FIREBASE_WEB_API_KEY)}`,
+    {
+      method: "POST",
+      headers: {"content-type": "application/json"},
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(10_000),
+    },
+  );
+  const value = await response.json<Record<string, unknown>>().catch(() => ({}));
+  return {ok: response.ok, value};
+}
+
+async function accountByLoginId(env: Env, loginId: string): Promise<StudentAccountPayload | null> {
+  const loginHash = await hmac(env, `login:${loginId}`);
+  const row = await env.PROFILE_DB.prepare(
+    "SELECT account_ciphertext, account_iv FROM student_accounts WHERE login_id_hash = ?1",
+  ).bind(loginHash).first<{account_ciphertext: string; account_iv: string}>();
+  return row ? decryptAccount(env, row.account_ciphertext, row.account_iv) : null;
+}
+
+async function putStudentAccount(request: Request, env: Env): Promise<Response> {
+  const identity = await requireFirebaseIdentity(request, env, 10 * 60);
+  if (!identity.phoneNumber) throw new HttpError(403, "최초 1회 휴대전화 인증이 필요합니다.");
+  if (!identity.email || !identity.emailVerified) {
+    throw new HttpError(403, "이메일 인증을 완료한 뒤 다시 시도해 주세요.");
+  }
+  const body = await request.json<Record<string, unknown>>().catch((): Record<string, unknown> => ({}));
+  const loginId = normalizeLoginId(body.loginId);
+  if (!env.ACCOUNT_CONSENT_VERSION || body.consent !== true ||
+      body.consentVersion !== env.ACCOUNT_CONSENT_VERSION) {
+    throw new HttpError(400, "계정 개인정보 수집·이용 동의가 필요합니다.");
+  }
+  const subjectHash = await profileSubjectHash(env, identity.subject);
+  const profile = await env.PROFILE_DB.prepare(
+    "SELECT provider_subject_hash FROM verified_student_profiles WHERE provider_subject_hash = ?1",
+  ).bind(subjectHash).first();
+  if (!profile) throw new HttpError(409, "학생 정보를 먼저 등록해 주세요.");
+
+  const [loginIdHash, emailHash, encrypted] = await Promise.all([
+    hmac(env, `login:${loginId}`),
+    hmac(env, `email:${identity.email}`),
+    encryptAccount(env, {loginId, email: identity.email}),
+  ]);
+  const now = Date.now();
+  try {
+    await env.PROFILE_DB.prepare(
+      `INSERT INTO student_accounts(
+         provider_subject_hash, login_id_hash, email_hash, account_ciphertext,
+         account_iv, encryption_key_version, consent_version, consented_at, created_at, updated_at
+       ) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?7, ?7)
+       ON CONFLICT(provider_subject_hash) DO UPDATE SET
+         login_id_hash = excluded.login_id_hash,
+         email_hash = excluded.email_hash,
+         account_ciphertext = excluded.account_ciphertext,
+         account_iv = excluded.account_iv,
+         encryption_key_version = excluded.encryption_key_version,
+         consent_version = excluded.consent_version,
+         consented_at = excluded.consented_at,
+         updated_at = excluded.updated_at`,
+    ).bind(
+      subjectHash, loginIdHash, emailHash, encrypted.ciphertext, encrypted.iv,
+      env.ACCOUNT_CONSENT_VERSION, now,
+    ).run();
+  } catch {
+    throw new HttpError(409, "이미 사용 중인 아이디 또는 이메일입니다.");
+  }
+  return json({saved: true, account: {loginId, email: identity.email}});
+}
+
+async function getStudentAccount(request: Request, env: Env): Promise<Response> {
+  const identity = await requireFirebaseIdentity(request, env);
+  const subjectHash = await profileSubjectHash(env, identity.subject);
+  const row = await env.PROFILE_DB.prepare(
+    "SELECT account_ciphertext, account_iv FROM student_accounts WHERE provider_subject_hash = ?1",
+  ).bind(subjectHash).first<{account_ciphertext: string; account_iv: string}>();
+  if (!row) throw new HttpError(404, "등록된 로그인 계정이 없습니다.");
+  const account = await decryptAccount(env, row.account_ciphertext, row.account_iv);
+  return json({account});
+}
+
+async function resolveLogin(request: Request, env: Env): Promise<Response> {
+  const body = await request.json<Record<string, unknown>>().catch((): Record<string, unknown> => ({}));
+  const loginId = normalizeLoginId(body.loginId);
+  const password = typeof body.password === "string" ? body.password : "";
+  if (password.length < 8 || password.length > 128) throw new HttpError(401, "아이디 또는 비밀번호가 올바르지 않습니다.");
+  await enforceAuthRateLimit(request, env, "login", loginId, 8);
+  const account = await accountByLoginId(env, loginId);
+  if (!account) throw new HttpError(401, "아이디 또는 비밀번호가 올바르지 않습니다.");
+  const result = await firebaseIdentityToolkit(env, "accounts:signInWithPassword", {
+    email: account.email,
+    password,
+    returnSecureToken: true,
+  });
+  if (!result.ok) throw new HttpError(401, "아이디 또는 비밀번호가 올바르지 않습니다.");
+  return json({email: account.email});
+}
+
+async function requestPasswordReset(request: Request, env: Env): Promise<Response> {
+  const body = await request.json<Record<string, unknown>>().catch((): Record<string, unknown> => ({}));
+  const loginId = normalizeLoginId(body.loginId);
+  await enforceAuthRateLimit(request, env, "password-reset", loginId, 4);
+  const account = await accountByLoginId(env, loginId);
+  if (account) {
+    await firebaseIdentityToolkit(env, "accounts:sendOobCode", {
+      requestType: "PASSWORD_RESET",
+      email: account.email,
+    });
+  }
+  return json({accepted: true, message: "등록된 계정이면 비밀번호 재설정 메일을 보냈습니다."});
+}
+
+async function requestLoginIdEmail(request: Request, env: Env): Promise<Response> {
+  const body = await request.json<Record<string, unknown>>().catch((): Record<string, unknown> => ({}));
+  const email = normalizeEmail(body.email);
+  await enforceAuthRateLimit(request, env, "find-login-id", email, 4);
+  const emailHash = await hmac(env, `email:${email}`);
+  const exists = await env.PROFILE_DB.prepare(
+    "SELECT provider_subject_hash FROM student_accounts WHERE email_hash = ?1",
+  ).bind(emailHash).first();
+  if (exists) {
+    await firebaseIdentityToolkit(env, "accounts:sendOobCode", {
+      requestType: "EMAIL_SIGNIN",
+      email,
+      continueUrl: `https://${env.FIREBASE_PROJECT_ID}.firebaseapp.com/auth/email-link`,
+      canHandleCodeInApp: true,
+      androidPackageName: "kr.hs.gunpo.school",
+      androidInstallApp: true,
+    });
+  }
+  return json({accepted: true, message: "등록된 이메일이면 아이디 확인 링크를 보냈습니다."});
+}
+
+type SocialProvider = "naver" | "kakao";
+
+function requireSocialConfiguration(env: Env, provider: SocialProvider): void {
+  if (!(provider === "kakao" ? env.KAKAO_REST_API_KEY && env.KAKAO_CLIENT_SECRET : env.NAVER_CLIENT_ID && env.NAVER_CLIENT_SECRET) ||
+      !env.FIREBASE_SERVICE_ACCOUNT_EMAIL || !env.FIREBASE_SERVICE_ACCOUNT_PRIVATE_KEY) {
+    throw new HttpError(503, "소셜 로그인이 아직 서버에 설정되지 않았습니다.");
+  }
+}
+
+async function startSocialAuthentication(request: Request, env: Env, provider: SocialProvider): Promise<Response> {
+  requireSocialConfiguration(env, provider);
+  await enforceAuthRateLimit(request, env, `${provider}-start`, "oauth", 8);
+  const authorization = request.headers.get("authorization");
+  const identity = authorization ? await requireFirebaseIdentity(request, env, 10 * 60) : null;
+  const body = await request.json<Record<string, unknown>>().catch((): Record<string, unknown> => ({}));
+  const codeChallenge = typeof body.codeChallenge === "string" ? body.codeChallenge : "";
+  if (!/^[A-Za-z0-9_-]{43}$/.test(codeChallenge)) throw new HttpError(400, "소셜 보안 요청이 올바르지 않습니다.");
+  const state = randomUrlToken();
+  const stateHash = await hmac(env, `${provider}-state:${state}`);
+  const encryptedUid = identity ? await encryptSecretText(env, identity.subject) : null;
+  const now = Date.now();
+  await env.PROFILE_DB.prepare(
+    `INSERT INTO naver_auth_sessions(
+      state_hash, code_challenge, firebase_uid_ciphertext, firebase_uid_iv, expires_at, created_at
+     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+  ).bind(stateHash, codeChallenge, encryptedUid?.ciphertext ?? null, encryptedUid?.iv ?? null, now + 10 * 60 * 1000, now).run();
+  const callbackUrl = `${new URL(request.url).origin}/v1/auth/${provider}/callback`;
+  const authorizeUrl = new URL(provider === "kakao" ? "https://kauth.kakao.com/oauth/authorize" : "https://nid.naver.com/oauth2.0/authorize");
+  authorizeUrl.searchParams.set("response_type", "code");
+  authorizeUrl.searchParams.set("client_id", provider === "kakao" ? env.KAKAO_REST_API_KEY : env.NAVER_CLIENT_ID);
+  authorizeUrl.searchParams.set("redirect_uri", callbackUrl);
+  authorizeUrl.searchParams.set("state", state);
+  return json({authorizeUrl: authorizeUrl.toString()});
+}
+
+async function firebaseCustomToken(env: Env, uid: string): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const privateKey = env.FIREBASE_SERVICE_ACCOUNT_PRIVATE_KEY.replace(/\\n/g, "\n");
+  return new SignJWT({uid})
+    .setProtectedHeader({alg: "RS256", typ: "JWT"})
+    .setIssuer(env.FIREBASE_SERVICE_ACCOUNT_EMAIL)
+    .setSubject(env.FIREBASE_SERVICE_ACCOUNT_EMAIL)
+    .setAudience("https://identitytoolkit.googleapis.com/google.identity.identitytoolkit.v1.IdentityToolkit")
+    .setIssuedAt(now)
+    .setExpirationTime(now + 60 * 60)
+    .sign(await importPKCS8(privateKey, "RS256"));
+}
+
+async function completeSocialAuthentication(request: Request, env: Env, provider: SocialProvider): Promise<Response> {
+  requireSocialConfiguration(env, provider);
+  const url = new URL(request.url);
+  const state = url.searchParams.get("state") || "";
+  const authorizationCode = url.searchParams.get("code") || "";
+  if (!state || !authorizationCode || url.searchParams.get("error")) {
+    throw new HttpError(400, "소셜 인증이 취소되었거나 올바르지 않습니다.");
+  }
+  const stateHash = await hmac(env, `${provider}-state:${state}`);
+  const session = await env.PROFILE_DB.prepare(
+    `DELETE FROM naver_auth_sessions WHERE state_hash = ?1
+     RETURNING code_challenge, firebase_uid_ciphertext, firebase_uid_iv, expires_at`,
+  ).bind(stateHash).first<{
+    code_challenge: string;
+    firebase_uid_ciphertext: string | null;
+    firebase_uid_iv: string | null;
+    expires_at: number;
+  }>();
+  if (!session || session.expires_at <= Date.now()) throw new HttpError(400, "소셜 인증 요청이 만료되었습니다.");
+
+  const callbackUrl = `${url.origin}/v1/auth/${provider}/callback`;
+  const tokenUrl = provider === "kakao" ? "https://kauth.kakao.com/oauth/token" : "https://nid.naver.com/oauth2.0/token";
+  const tokenBody = new URLSearchParams({
+    grant_type: "authorization_code",
+    client_id: provider === "kakao" ? env.KAKAO_REST_API_KEY : env.NAVER_CLIENT_ID,
+    client_secret: provider === "kakao" ? env.KAKAO_CLIENT_SECRET : env.NAVER_CLIENT_SECRET,
+    code: authorizationCode,
+    state,
+    redirect_uri: callbackUrl,
+  });
+  const tokenResponse = await fetch(tokenUrl, {method: "POST", body: tokenBody, signal: AbortSignal.timeout(10_000)});
+  const token = await tokenResponse.json<{access_token?: string}>().catch((): {access_token?: string} => ({}));
+  if (!tokenResponse.ok || !token.access_token) throw new HttpError(401, "소셜 인증 토큰을 확인하지 못했습니다.");
+  const profileResponse = await fetch(provider === "kakao" ? "https://kapi.kakao.com/v2/user/me" : "https://openapi.naver.com/v1/nid/me", {
+    headers: {authorization: `Bearer ${token.access_token}`}, signal: AbortSignal.timeout(10_000),
+  });
+  const profile = await profileResponse.json<{id?: number; resultcode?: string; response?: {id?: string}}>()
+    .catch((): {id?: number; resultcode?: string; response?: {id?: string}} => ({}));
+  const naverId = provider === "kakao"
+    ? (Number.isSafeInteger(profile.id) && Number(profile.id) > 0 ? String(profile.id) : undefined)
+    : (profile.resultcode === "00" ? profile.response?.id : undefined);
+  if (!profileResponse.ok || !naverId) throw new HttpError(401, "소셜 사용자 정보를 확인하지 못했습니다.");
+
+  const providerUserHash = await hmac(env, `${provider}-user:${naverId}`);
+  let firebaseUid: string | null = null;
+  if (session.firebase_uid_ciphertext && session.firebase_uid_iv) {
+    firebaseUid = await decryptSecretText(env, session.firebase_uid_ciphertext, session.firebase_uid_iv);
+  } else {
+    const linked = await env.PROFILE_DB.prepare(
+      `SELECT firebase_uid_ciphertext, firebase_uid_iv FROM social_identity_links
+       WHERE provider = ?2 AND provider_user_hash = ?1`,
+    ).bind(providerUserHash, provider).first<{firebase_uid_ciphertext: string; firebase_uid_iv: string}>();
+    if (linked) firebaseUid = await decryptSecretText(env, linked.firebase_uid_ciphertext, linked.firebase_uid_iv);
+  }
+  if (!firebaseUid) {
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(naverId)));
+    firebaseUid = `${provider}_${bytesToHex(digest).slice(0, 48)}`;
+  }
+
+  const encryptedUid = await encryptSecretText(env, firebaseUid);
+  const firebaseSubjectHash = await profileSubjectHash(env, firebaseUid);
+  const now = Date.now();
+  // A social identity must never be reassigned to another Firebase account.
+  await env.PROFILE_DB.prepare(
+    `INSERT OR IGNORE INTO social_identity_links(
+       provider, provider_user_hash, firebase_uid_ciphertext, firebase_uid_iv, created_at, updated_at
+     ) VALUES (?1, ?2, ?3, ?4, ?5, ?5)`,
+  ).bind(provider, providerUserHash, encryptedUid.ciphertext, encryptedUid.iv, now).run();
+  const owner = await env.PROFILE_DB.prepare(
+    "SELECT firebase_uid_ciphertext, firebase_uid_iv FROM social_identity_links WHERE provider = ?1 AND provider_user_hash = ?2",
+  ).bind(provider, providerUserHash).first<{firebase_uid_ciphertext: string; firebase_uid_iv: string}>();
+  if (!owner || await decryptSecretText(env, owner.firebase_uid_ciphertext, owner.firebase_uid_iv) !== firebaseUid) {
+    throw new HttpError(409, "이미 다른 계정에 연결된 소셜 계정입니다.");
+  }
+  await env.PROFILE_DB.prepare(
+    "INSERT OR IGNORE INTO firebase_social_links(provider_subject_hash, provider, created_at) VALUES (?1, ?2, ?3)",
+  ).bind(firebaseSubjectHash, provider, now).run();
+
+  const customToken = await firebaseCustomToken(env, firebaseUid);
+  const exchangeCode = randomUrlToken();
+  const exchangeHash = await hmac(env, `${provider}-code:${exchangeCode}`);
+  const encryptedToken = await encryptSecretText(env, customToken);
+  await env.PROFILE_DB.prepare(
+    `INSERT INTO naver_login_codes(
+       code_hash, code_challenge, custom_token_ciphertext, custom_token_iv, expires_at, created_at
+     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+  ).bind(exchangeHash, session.code_challenge, encryptedToken.ciphertext, encryptedToken.iv, now + 2 * 60 * 1000, now).run();
+  return Response.redirect(`gunposchool://auth/${provider}?code=${encodeURIComponent(exchangeCode)}`, 302);
+}
+
+async function exchangeSocialLoginCode(request: Request, env: Env, provider: SocialProvider): Promise<Response> {
+  requireSocialConfiguration(env, provider);
+  const body = await request.json<Record<string, unknown>>().catch((): Record<string, unknown> => ({}));
+  const code = typeof body.code === "string" ? body.code : "";
+  const verifier = typeof body.codeVerifier === "string" ? body.codeVerifier : "";
+  if (!/^[A-Za-z0-9_-]{20,100}$/.test(code)) throw new HttpError(400, "소셜 로그인 코드가 올바르지 않습니다.");
+  if (!/^[A-Za-z0-9_-]{43,128}$/.test(verifier)) throw new HttpError(400, "소셜 보안 검증값이 올바르지 않습니다.");
+  const codeHash = await hmac(env, `${provider}-code:${code}`);
+  const row = await env.PROFILE_DB.prepare(
+    `DELETE FROM naver_login_codes WHERE code_hash = ?1
+     RETURNING code_challenge, custom_token_ciphertext, custom_token_iv, expires_at`,
+  ).bind(codeHash).first<{code_challenge: string; custom_token_ciphertext: string; custom_token_iv: string; expires_at: number}>();
+  if (!row || row.expires_at <= Date.now()) throw new HttpError(400, "소셜 로그인 코드가 만료되었습니다.");
+  const verifierDigest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
+  const verifierChallenge = bytesToBase64(verifierDigest).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  if (verifierChallenge !== row.code_challenge) throw new HttpError(401, "소셜 로그인 보안 검증에 실패했습니다.");
+  return json({customToken: await decryptSecretText(env, row.custom_token_ciphertext, row.custom_token_iv)});
+}
+
+async function socialLinkStatus(request: Request, env: Env, provider: SocialProvider): Promise<Response> {
+  const identity = await requireFirebaseIdentity(request, env);
+  const subjectHash = await profileSubjectHash(env, identity.subject);
+  const linked = await env.PROFILE_DB.prepare(
+    "SELECT provider FROM firebase_social_links WHERE provider_subject_hash = ?1 AND provider = ?2",
+  ).bind(subjectHash, provider).first();
+  return json({linked: Boolean(linked), configured: Boolean(
+    (provider === "kakao" ? env.KAKAO_REST_API_KEY && env.KAKAO_CLIENT_SECRET : env.NAVER_CLIENT_ID && env.NAVER_CLIENT_SECRET) &&
+    env.FIREBASE_SERVICE_ACCOUNT_EMAIL && env.FIREBASE_SERVICE_ACCOUNT_PRIVATE_KEY
+  )});
+}
+
 async function putStudentProfile(request: Request, env: Env): Promise<Response> {
-  const identity = await requireFirebasePhoneIdentity(request, env, 10 * 60);
+  const identity = await requireFirebaseIdentity(request, env);
+  if (!identity.phoneNumber) throw new HttpError(403, "최초 1회 휴대전화 인증이 필요합니다.");
+  const subjectHash = await profileSubjectHash(env, identity.subject);
+  const existing = await env.PROFILE_DB.prepare(
+    "SELECT provider_subject_hash FROM verified_student_profiles WHERE provider_subject_hash = ?1",
+  ).bind(subjectHash).first();
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  if (!existing && nowSeconds - identity.authenticationTime > 10 * 60) {
+    throw new HttpError(401, "휴대전화 인증 시간이 지났습니다. 다시 인증해 주세요.");
+  }
   const input = parseStudentProfile(await request.json<unknown>().catch(() => null));
   if (!env.PROFILE_CONSENT_VERSION || !input.consent || input.consentVersion !== env.PROFILE_CONSENT_VERSION) {
     throw new HttpError(400, "개인정보 수집·이용 및 국외 이전 동의가 필요합니다.");
@@ -773,8 +1211,7 @@ async function putStudentProfile(request: Request, env: Env): Promise<Response> 
     classNumber: input.classNumber,
     seatNumber: input.seatNumber,
   };
-  const [subjectHash, phoneHash, encrypted] = await Promise.all([
-    profileSubjectHash(env, identity.subject),
+  const [phoneHash, encrypted] = await Promise.all([
     hmac(env, `phone:${identity.phoneNumber}`),
     encryptProfile(env, profile),
   ]);
@@ -817,7 +1254,7 @@ async function putStudentProfile(request: Request, env: Env): Promise<Response> 
 }
 
 async function getStudentProfile(request: Request, env: Env): Promise<Response> {
-  const identity = await requireFirebasePhoneIdentity(request, env);
+  const identity = await requireFirebaseIdentity(request, env);
   const subjectHash = await profileSubjectHash(env, identity.subject);
   const row = await env.PROFILE_DB.prepare(
     `SELECT profile_ciphertext, profile_iv, consent_version, consented_at, verified_at, expires_at
@@ -852,7 +1289,7 @@ async function getStudentProfile(request: Request, env: Env): Promise<Response> 
 }
 
 async function deleteStudentProfile(request: Request, env: Env): Promise<Response> {
-  const identity = await requireFirebasePhoneIdentity(request, env);
+  const identity = await requireFirebaseIdentity(request, env);
   const subjectHash = await profileSubjectHash(env, identity.subject);
   await env.PROFILE_DB.prepare(
     "DELETE FROM verified_student_profiles WHERE provider_subject_hash = ?1",
@@ -882,6 +1319,33 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     if (request.method === "PUT") return putStudentProfile(request, env);
     if (request.method === "GET") return getStudentProfile(request, env);
     if (request.method === "DELETE") return deleteStudentProfile(request, env);
+  }
+
+  if (url.pathname === "/v1/account") {
+    if (request.method === "PUT") return putStudentAccount(request, env);
+    if (request.method === "GET") return getStudentAccount(request, env);
+  }
+
+  if (request.method === "POST" && url.pathname === "/v1/auth/resolve-login") {
+    return resolveLogin(request, env);
+  }
+
+  if (request.method === "POST" && url.pathname === "/v1/auth/password-reset") {
+    return requestPasswordReset(request, env);
+  }
+
+  if (request.method === "POST" && url.pathname === "/v1/auth/find-login-id") {
+    return requestLoginIdEmail(request, env);
+  }
+
+  const socialRoute = url.pathname.match(/^\/v1\/auth\/(naver|kakao)\/(start|callback|exchange|status)$/);
+  if (socialRoute) {
+    const provider = socialRoute[1] as SocialProvider;
+    const action = socialRoute[2];
+    if (request.method === "POST" && action === "start") return startSocialAuthentication(request, env, provider);
+    if (request.method === "GET" && action === "callback") return completeSocialAuthentication(request, env, provider);
+    if (request.method === "POST" && action === "exchange") return exchangeSocialLoginCode(request, env, provider);
+    if (request.method === "GET" && action === "status") return socialLinkStatus(request, env, provider);
   }
 
   if (request.method === "GET" && url.pathname === "/v1/notices") {

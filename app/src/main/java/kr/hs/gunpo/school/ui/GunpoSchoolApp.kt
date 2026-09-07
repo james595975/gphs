@@ -145,6 +145,7 @@ import kr.hs.gunpo.school.data.SchoolData
 import kr.hs.gunpo.school.data.SupplementaryCourseCatalog
 import kr.hs.gunpo.school.data.SupplementaryCourseGroup
 import kr.hs.gunpo.school.data.SmsRequestLimiter
+import kr.hs.gunpo.school.data.StudentAccountRepository
 import kr.hs.gunpo.school.data.UserSettings
 import kr.hs.gunpo.school.domain.AcademicScheduleKind
 import kr.hs.gunpo.school.domain.AcademicSchedulePolicy
@@ -219,10 +220,53 @@ private fun effectiveLessons(date: LocalDate, settings: UserSettings, neisState:
 }
 
 @Composable
-fun GunpoSchoolApp(viewModel: MainViewModel, startDestination: String? = null) {
+fun GunpoSchoolApp(
+    viewModel: MainViewModel,
+    startDestination: String? = null,
+    incomingAuthLink: String? = null,
+) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val neisState by viewModel.neisState.collectAsStateWithLifecycle()
     val noticeState by viewModel.noticeState.collectAsStateWithLifecycle()
+    val firebaseAuth = remember { FirebaseAuth.getInstance() }
+    val context = LocalContext.current
+    var currentUser by remember { mutableStateOf(firebaseAuth.currentUser) }
+    var registrationRequested by remember { mutableStateOf(false) }
+    var profileMissing by remember { mutableStateOf(false) }
+    var hydratingUserId by remember { mutableStateOf<String?>(null) }
+    var hydrationError by remember { mutableStateOf<String?>(null) }
+    var hydrationRetry by remember { mutableIntStateOf(0) }
+    DisposableEffect(firebaseAuth) {
+        val listener = FirebaseAuth.AuthStateListener { currentUser = it.currentUser }
+        firebaseAuth.addAuthStateListener(listener)
+        onDispose { firebaseAuth.removeAuthStateListener(listener) }
+    }
+    LaunchedEffect(incomingAuthLink) {
+        val uri = incomingAuthLink?.let { runCatching { Uri.parse(it) }.getOrNull() }
+        if (uri?.scheme != "gunposchool" || uri.host != "auth") return@LaunchedEffect
+        val provider = when (uri.path) { "/naver" -> "naver"; "/kakao" -> "kakao"; else -> return@LaunchedEffect }
+        val label = if (provider == "kakao") "Kakao" else "Naver"
+        val code = uri.getQueryParameter("code") ?: return@LaunchedEffect
+        val recoveryPreferences = context.getSharedPreferences("auth_recovery", android.content.Context.MODE_PRIVATE)
+        val verifier = recoveryPreferences.getString("${provider}_code_verifier", null)
+        if (verifier == null) {
+            Toast.makeText(context, "$label 로그인을 요청한 기기에서 다시 시도해 주세요.", Toast.LENGTH_SHORT).show()
+            return@LaunchedEffect
+        }
+        StudentAccountRepository().exchangeSocial(provider, code, verifier).fold(
+            onSuccess = { customToken ->
+                recoveryPreferences.edit().remove("${provider}_code_verifier").apply()
+                firebaseAuth.signInWithCustomToken(customToken).addOnCompleteListener { task ->
+                    Toast.makeText(
+                        context,
+                        if (task.isSuccessful) "$label 계정이 연결되었습니다." else "$label 로그인을 완료하지 못했습니다.",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
+            },
+            onFailure = { Toast.makeText(context, it.message ?: "$label 로그인 코드가 만료되었습니다.", Toast.LENGTH_SHORT).show() },
+        )
+    }
     var networkNow by remember { mutableStateOf(NetworkClock.now()) }
     LaunchedEffect(Unit) {
         NetworkClock.synchronize()
@@ -245,7 +289,6 @@ fun GunpoSchoolApp(viewModel: MainViewModel, startDestination: String? = null) {
             }
         }
     }
-    val context = LocalContext.current
     var showAlwaysLocationGuide by remember { mutableStateOf(false) }
     val foregroundLocationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         showAlwaysLocationGuide = true
@@ -299,7 +342,70 @@ fun GunpoSchoolApp(viewModel: MainViewModel, startDestination: String? = null) {
         }
         return
     }
-    if (!settings.isProfileConfigured) {
+
+    val localIdentityMismatch = currentUser != null && settings.accountUid.isNotBlank() &&
+        settings.accountUid != currentUser?.uid
+    LaunchedEffect(currentUser?.uid, settings.isProfileConfigured, settings.accountUid, registrationRequested, profileMissing, hydrationRetry) {
+        val user = currentUser ?: return@LaunchedEffect
+        if ((settings.isProfileConfigured && !localIdentityMismatch) || registrationRequested ||
+            hydratingUserId == user.uid || profileMissing) {
+            return@LaunchedEffect
+        }
+        hydratingUserId = user.uid
+        hydrationError = null
+        user.getIdToken(true).addOnCompleteListener { tokenTask ->
+            val token = tokenTask.result?.token
+            if (token == null) {
+                hydratingUserId = null
+                hydrationError = "로그인 정보를 갱신하지 못했습니다."
+            } else viewModel.restoreAuthenticatedData(
+                firebaseIdToken = token,
+                firebaseUid = user.uid,
+                onSuccess = { hydratingUserId = null },
+                onProfileMissing = {
+                    if (localIdentityMismatch) viewModel.clearPrivateData {
+                        hydratingUserId = null
+                        profileMissing = true
+                    } else {
+                        hydratingUserId = null
+                        profileMissing = true
+                    }
+                },
+                onError = { hydratingUserId = null; hydrationError = it },
+            )
+        }
+    }
+
+    if (currentUser == null && !registrationRequested) {
+        LoginScreen(viewModel, incomingAuthLink, onRegister = {
+            registrationRequested = true
+            profileMissing = true
+            hydrationError = null
+        })
+        return
+    }
+
+    if (hydratingUserId != null || (localIdentityMismatch && hydrationError == null)) {
+        AuthenticationLoading("저장된 학생정보를 불러오는 중…")
+        return
+    }
+
+    if (hydrationError != null && currentUser != null && (!settings.isProfileConfigured || localIdentityMismatch)) {
+        Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
+            Column(
+                Modifier.fillMaxSize().padding(padding).padding(24.dp),
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Text("계정 정보를 불러오지 못했습니다", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                Text(hydrationError.orEmpty(), color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(vertical = 12.dp))
+                Button(onClick = { hydrationError = null; hydratingUserId = null; hydrationRetry++ }) { Text("다시 시도") }
+                TextButton(onClick = { firebaseAuth.signOut() }) { Text("다른 계정으로 로그인") }
+            }
+        }
+        return
+    }
+
+    if ((currentUser == null && registrationRequested) || !settings.isProfileConfigured) {
         Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
             ProfileSettings(
                 settings,
@@ -307,9 +413,17 @@ fun GunpoSchoolApp(viewModel: MainViewModel, startDestination: String? = null) {
                 padding,
                 onBack = null,
                 isInitialSetup = true,
-                onInitialSetupComplete = requestInitialPermissions,
+                onInitialSetupComplete = {
+                    registrationRequested = false
+                    profileMissing = false
+                    requestInitialPermissions()
+                },
             )
         }
+        return
+    }
+    if (!settings.isAccountConfigured) {
+        AccountSetupScreen(settings, viewModel, onComplete = { registrationRequested = false })
         return
     }
 
@@ -1232,6 +1346,7 @@ private fun NoticeSection(title: String, notices: List<Notice>, open: (Notice) -
 private fun SettingsScreen(settings: UserSettings, neisState: NeisState, viewModel: MainViewModel, padding: PaddingValues) {
     var detail by remember { mutableStateOf(false) }
     var profileDetail by remember { mutableStateOf(false) }
+    var accountDetail by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -1242,16 +1357,40 @@ private fun SettingsScreen(settings: UserSettings, neisState: NeisState, viewMod
             context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}")))
         }
     }
-    BackHandler(enabled = profileDetail || detail) {
-        if (profileDetail) profileDetail = false else detail = false
+    BackHandler(enabled = accountDetail || profileDetail || detail) {
+        when {
+            accountDetail -> accountDetail = false
+            profileDetail -> profileDetail = false
+            else -> detail = false
+        }
     }
-    if (profileDetail) {
+    if (accountDetail) {
+        AccountSettingsScreen(
+            settings = settings,
+            onBack = { accountDetail = false },
+            onSignOut = { viewModel.clearPrivateData { accountDetail = false } },
+        )
+    } else if (profileDetail) {
         ProfileSettings(settings, viewModel, padding, onBack = { profileDetail = false })
     } else if (detail) {
         ScheduleSettings(settings, viewModel, padding) { detail = false }
     } else Column(Modifier.fillMaxSize().padding(padding)) {
         NavigationHeader("내 학교생활 설정")
         LazyColumn(contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            item {
+                SettingsSection("로그인 계정") {
+                    SettingsRow(
+                        Icons.Default.Person,
+                        settings.accountId,
+                        settings.accountEmail,
+                        SchoolGreen,
+                    )
+                    HorizontalDivider(Modifier.padding(start = 54.dp))
+                    SettingsActionRow(Icons.Default.Tune, "소셜 로그인 연동 · 로그아웃", showChevron = true) {
+                        accountDetail = true
+                    }
+                }
+            }
             item {
                 SettingsSection("학생 정보") {
                     SettingsRow(
@@ -1366,8 +1505,10 @@ private fun ProfileSettings(
     var smsRequestLimit by remember { mutableStateOf(smsRequestLimiter.status()) }
     val parsedStudentNumber = parseStudentNumber(number)
     val normalizedPhoneNumber = normalizeKoreanPhoneNumber(phoneNumber)
-    val canSave = name.isNotBlank() && parsedStudentNumber != null &&
-        verifiedPhoneNumber == normalizedPhoneNumber && consented && !isSaving
+    val needsPhoneVerification = isInitialSetup || !settings.isSmsVerified
+    val phoneStepComplete = !needsPhoneVerification ||
+        (verifiedPhoneNumber == normalizedPhoneNumber && consented)
+    val canSave = name.isNotBlank() && parsedStudentNumber != null && phoneStepComplete && !isSaving
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -1379,10 +1520,17 @@ private fun ProfileSettings(
     fun signInWithPhoneCredential(credential: PhoneAuthCredential) {
         isVerifyingCode = true
         authenticationError = null
-        firebaseAuth.signInWithCredential(credential).addOnCompleteListener { task ->
+        val existingUser = firebaseAuth.currentUser
+        val task = when {
+            existingUser == null -> firebaseAuth.signInWithCredential(credential)
+            existingUser.providerData.any { it.providerId == PhoneAuthProvider.PROVIDER_ID } ->
+                existingUser.reauthenticate(credential)
+            else -> existingUser.linkWithCredential(credential)
+        }
+        task.addOnCompleteListener { task ->
             isVerifyingCode = false
             if (task.isSuccessful) {
-                val authenticatedPhone = task.result?.user?.phoneNumber
+                val authenticatedPhone = firebaseAuth.currentUser?.phoneNumber
                 if (authenticatedPhone != null) {
                     phoneNumber = koreanLocalPhoneNumber(authenticatedPhone)
                     verifiedPhoneNumber = authenticatedPhone
@@ -1407,7 +1555,11 @@ private fun ProfileSettings(
         ) {
             item {
                 Text(
-                    "이름과 학번은 사용자가 입력한 값이며, SMS 인증은 전화번호 소유 여부만 확인합니다.",
+                    if (needsPhoneVerification) {
+                        "이름과 학번은 사용자가 입력한 값이며, SMS 인증은 전화번호 소유 여부만 확인합니다."
+                    } else {
+                        "전화번호 인증이 완료된 계정입니다. 이름과 학번은 다시 SMS 인증하지 않고 수정할 수 있습니다."
+                    },
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 14.sp,
                 )
@@ -1442,8 +1594,9 @@ private fun ProfileSettings(
                     }
                 }
             }
-            item {
-                SettingsSection("개인정보 수집·이용 동의") {
+            if (needsPhoneVerification) {
+                item {
+                    SettingsSection("개인정보 수집·이용 동의") {
                     Row(
                         Modifier.fillMaxWidth().clickable { consented = !consented }.padding(10.dp),
                         verticalAlignment = Alignment.Top,
@@ -1456,10 +1609,10 @@ private fun ProfileSettings(
                             fontSize = 13.sp,
                         )
                     }
+                    }
                 }
-            }
-            item {
-                SettingsSection("휴대전화 SMS 인증") {
+                item {
+                    SettingsSection("휴대전화 SMS 인증") {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         OutlinedTextField(
                             value = phoneNumber,
@@ -1566,18 +1719,25 @@ private fun ProfileSettings(
                                 fontWeight = FontWeight.Bold,
                             )
                         }
-                        authenticationError?.let { error ->
-                            Text(error, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
-                        }
                     }
+                    }
+                }
+            }
+            authenticationError?.let { error ->
+                item {
+                    Text(error, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
                 }
             }
             item {
                 Button(
                     onClick = {
                         val user = firebaseAuth.currentUser
-                        if (user == null || user.phoneNumber != verifiedPhoneNumber) {
-                            authenticationError = "SMS 인증을 다시 진행해 주세요."
+                        if (user == null) {
+                            authenticationError = "로그인이 만료되었습니다. 다시 로그인해 주세요."
+                            return@Button
+                        }
+                        if (needsPhoneVerification && user.phoneNumber != verifiedPhoneNumber) {
+                            authenticationError = "SMS 인증을 진행해 주세요."
                             return@Button
                         }
                         isSaving = true
@@ -1608,7 +1768,14 @@ private fun ProfileSettings(
                     enabled = canSave,
                     modifier = Modifier.fillMaxWidth().height(52.dp),
                 ) {
-                    Text(if (isSaving) "저장 중…" else if (isInitialSetup) "인증하고 시작하기" else "인증하고 저장")
+                    Text(
+                        when {
+                            isSaving -> "저장 중…"
+                            needsPhoneVerification && isInitialSetup -> "인증하고 시작하기"
+                            needsPhoneVerification -> "인증하고 저장"
+                            else -> "저장"
+                        },
+                    )
                 }
             }
         }

@@ -11,6 +11,7 @@ import kr.hs.gunpo.school.data.NeisState
 import kr.hs.gunpo.school.data.NoticeState
 import kr.hs.gunpo.school.data.SchoolNoticeRepository
 import kr.hs.gunpo.school.data.StudentProfileRepository
+import kr.hs.gunpo.school.data.StudentAccountRepository
 import kr.hs.gunpo.school.notification.SchoolNotificationManager
 import kr.hs.gunpo.school.location.SchoolGeofenceManager
 import kr.hs.gunpo.school.domain.NetworkClock
@@ -32,6 +33,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val neisRepository = NeisRepository(application)
     private val noticeRepository = SchoolNoticeRepository(application)
     private val studentProfileRepository = StudentProfileRepository()
+    private val studentAccountRepository = StudentAccountRepository()
 
     val settings = repository.settings.stateIn(
         viewModelScope,
@@ -156,6 +158,78 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             },
             onFailure = { error -> onError(error.message ?: "학생 정보를 저장하지 못했습니다.") },
         )
+    }
+
+    fun saveAccount(
+        firebaseIdToken: String,
+        firebaseUid: String,
+        loginId: String,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit,
+    ) = viewModelScope.launch {
+        studentAccountRepository.save(firebaseIdToken, loginId).fold(
+            onSuccess = { account ->
+                repository.updateAccount(account.loginId, account.email, firebaseUid)
+                onSuccess()
+            },
+            onFailure = { onError(it.message ?: "계정 정보를 저장하지 못했습니다.") },
+        )
+    }
+
+    fun restoreAuthenticatedData(
+        firebaseIdToken: String,
+        firebaseUid: String,
+        onSuccess: () -> Unit,
+        onProfileMissing: () -> Unit,
+        onError: (String) -> Unit,
+    ) = viewModelScope.launch {
+        studentProfileRepository.load(firebaseIdToken).fold(
+            onSuccess = { profile ->
+                repository.updateProfile(profile.name, profile.studentNumber)
+                studentAccountRepository.load(firebaseIdToken).fold(
+                    onSuccess = { account ->
+                        repository.updateAccount(account.loginId, account.email, firebaseUid)
+                        onSuccess()
+                    },
+                    onFailure = { onError(it.message ?: "로그인 계정 정보를 불러오지 못했습니다.") },
+                )
+            },
+            onFailure = { error ->
+                if (error.message?.contains("저장된 학생 정보가 없습니다") == true) onProfileMissing()
+                else onError(error.message ?: "학생 정보를 불러오지 못했습니다.")
+            },
+        )
+    }
+
+    fun resolveLogin(
+        loginId: String,
+        password: String,
+        onSuccess: (String) -> Unit,
+        onError: (String) -> Unit,
+    ) = viewModelScope.launch {
+        studentAccountRepository.resolveLogin(loginId, password).fold(onSuccess, onFailure = {
+            onError(it.message ?: "로그인하지 못했습니다.")
+        })
+    }
+
+    fun requestPasswordReset(loginId: String, onResult: (String) -> Unit) = viewModelScope.launch {
+        studentAccountRepository.requestPasswordReset(loginId).fold(
+            onSuccess = onResult,
+            onFailure = { onResult(it.message ?: "재설정 메일을 요청하지 못했습니다.") },
+        )
+    }
+
+    fun requestLoginId(email: String, onResult: (String) -> Unit) = viewModelScope.launch {
+        studentAccountRepository.requestLoginId(email).fold(
+            onSuccess = onResult,
+            onFailure = { onResult(it.message ?: "아이디 확인 메일을 요청하지 못했습니다.") },
+        )
+    }
+
+    fun clearPrivateData(onComplete: () -> Unit = {}) = viewModelScope.launch {
+        repository.clearPrivateData()
+        SchoolNotificationManager.stop(getApplication())
+        onComplete()
     }
 
     fun updateNightStudy(day: Int, value: Int) = viewModelScope.launch {

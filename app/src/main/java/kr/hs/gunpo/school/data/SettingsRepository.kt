@@ -16,6 +16,9 @@ class SettingsRepository(private val context: Context) {
         val studentName = stringPreferencesKey("student_name")
         val studentNumber = stringPreferencesKey("student_number")
         val smsVerified = booleanPreferencesKey("sms_verified")
+        val accountId = stringPreferencesKey("account_id")
+        val accountEmail = stringPreferencesKey("account_email")
+        val accountUid = stringPreferencesKey("account_uid")
         val grade = intPreferencesKey("grade")
         val classNumber = intPreferencesKey("class_number")
         val liveUpdates = booleanPreferencesKey("live_updates_enabled")
@@ -33,6 +36,9 @@ class SettingsRepository(private val context: Context) {
             studentName = prefs[Keys.studentName].orEmpty(),
             studentNumber = studentNumber,
             isSmsVerified = prefs[Keys.smsVerified] ?: false,
+            accountId = prefs[Keys.accountId].orEmpty(),
+            accountEmail = prefs[Keys.accountEmail].orEmpty(),
+            accountUid = prefs[Keys.accountUid].orEmpty(),
             // 학년과 반은 학번에서 다시 계산해 과거에 잘못 저장된 설정도 자동 복구한다.
             grade = parsedStudentNumber?.grade ?: prefs[Keys.grade] ?: 2,
             classNumber = parsedStudentNumber?.classNumber ?: prefs[Keys.classNumber] ?: 1,
@@ -59,6 +65,25 @@ class SettingsRepository(private val context: Context) {
             it[Keys.smsVerified] = true
             it[Keys.grade] = studentNumber.grade
             it[Keys.classNumber] = studentNumber.classNumber
+        }
+    }
+
+    suspend fun updateAccount(loginId: String, email: String, firebaseUid: String) {
+        context.settingsDataStore.edit {
+            it[Keys.accountId] = loginId.trim().lowercase()
+            it[Keys.accountEmail] = email.trim().lowercase()
+            it[Keys.accountUid] = firebaseUid
+        }
+    }
+
+    suspend fun clearPrivateData() {
+        context.settingsDataStore.edit {
+            it.remove(Keys.studentName)
+            it.remove(Keys.studentNumber)
+            it.remove(Keys.smsVerified)
+            it.remove(Keys.accountId)
+            it.remove(Keys.accountEmail)
+            it.remove(Keys.accountUid)
         }
     }
 

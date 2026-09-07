@@ -13,3 +13,7 @@ app/build
 cloudflare/node_modules
 cloudflare/.wrangler
 cloudflare/.dev.vars*
+
+# Firebase Admin SDK service-account private keys
+*-firebase-adminsdk-*.json
+service-account*.json

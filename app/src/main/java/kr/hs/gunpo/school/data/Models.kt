@@ -135,6 +135,9 @@ data class UserSettings(
     val studentName: String = "",
     val studentNumber: String = "",
     val isSmsVerified: Boolean = false,
+    val accountId: String = "",
+    val accountEmail: String = "",
+    val accountUid: String = "",
     val grade: Int = 2,
     val classNumber: Int = 1,
     val nightStudyByDay: Map<Int, Int> = (1..5).associateWith { 0 },
@@ -148,4 +151,6 @@ data class UserSettings(
     val className: String get() = "${grade}학년 ${classNumber}반"
     val isProfileConfigured: Boolean get() =
         studentName.isNotBlank() && studentNumber.isNotBlank() && isSmsVerified
+    val isAccountConfigured: Boolean get() =
+        accountId.isNotBlank() && accountEmail.isNotBlank() && accountUid.isNotBlank()
 }
