@@ -28,6 +28,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,6 +43,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import kr.hs.gunpo.school.R
 import androidx.credentials.CredentialManager
 import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
@@ -422,12 +433,85 @@ private fun SocialProviderButtons(
     val resources = LocalResources.current
     val scope = rememberCoroutineScope()
     val auth = remember { FirebaseAuth.getInstance() }
-    val googleLinked = GoogleAuthProvider.PROVIDER_ID in linkedProviders
-    val githubLinked = "github.com" in linkedProviders
+    var nativeProviders by remember(currentUser?.uid) { mutableStateOf(linkedProviders) }
+    var remoteLinks by remember(currentUser?.uid) { mutableStateOf<Map<String, Boolean?>>(emptyMap()) }
+    var revision by remember { mutableStateOf(0) }
+    var working by remember { mutableStateOf(false) }
+    fun setBusy(value: Boolean) { working = value; onBusy(value) }
+    var unlinkTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(auth, lifecycleOwner) {
+        val listener = FirebaseAuth.IdTokenListener { revision++ }
+        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME) revision++ }
+        auth.addIdTokenListener(listener)
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { auth.removeIdTokenListener(listener); lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(currentUser?.uid, revision) {
+        val user = auth.currentUser ?: return@LaunchedEffect
+        val requestedRevision = revision
+        nativeProviders = user.providerData.map { it.providerId }.toSet()
+        user.getIdToken(false).addOnSuccessListener { result ->
+            val token = result.token ?: return@addOnSuccessListener
+            scope.launch {
+                val repository = StudentAccountRepository()
+                for (provider in listOf("kakao", "naver")) {
+                    repository.socialLinked(provider, token).fold(
+                        onSuccess = { if (auth.currentUser?.uid == user.uid && revision == requestedRevision) remoteLinks = remoteLinks + (provider to it) },
+                        onFailure = { if (auth.currentUser?.uid == user.uid && revision == requestedRevision) remoteLinks = remoteLinks + (provider to null) },
+                    )
+                }
+            }
+        }
+    }
+    fun requestUnlink(provider: String, label: String) { unlinkTarget = provider to label }
+    unlinkTarget?.let { (provider, label) ->
+        AlertDialog(
+            onDismissRequest = { if (!working) unlinkTarget = null },
+            title = { Text("$label 연결을 해제할까요?") },
+            text = { Text("GPHS의 로그인 연결을 해제합니다. 학생정보는 유지되며, 이후에는 아이디·비밀번호나 다른 연결된 계정으로 로그인해 주세요.") },
+            confirmButton = {
+                TextButton(enabled = !working, onClick = {
+                    val user = auth.currentUser ?: return@TextButton
+                    working = true
+                    setBusy(true)
+                    fun finish(error: String?) {
+                        working = false
+                        setBusy(false)
+                        unlinkTarget = null
+                        revision++
+                        onMessage(error ?: "$label 연결을 해제했습니다.")
+                    }
+                    if (provider == "kakao" || provider == "naver") {
+                        user.getIdToken(false).addOnCompleteListener { result ->
+                            val token = if (result.isSuccessful) result.result?.token else null
+                            if (token == null) finish("로그인 상태를 확인하지 못했습니다.")
+                            else scope.launch {
+                                StudentAccountRepository().unlinkSocial(provider, token).fold(
+                                    onSuccess = { remoteLinks = remoteLinks + (provider to false); finish(null) },
+                                    onFailure = { finish(it.message ?: "연결을 해제하지 못했습니다.") },
+                                )
+                            }
+                        }
+                    } else if (user.providerData.none { it.providerId in setOf("password", "phone", "google.com", "github.com") && it.providerId != provider }) {
+                        finish("다른 로그인 방법을 먼저 등록해 주세요.")
+                    } else {
+                        user.unlink(provider).addOnCompleteListener { result ->
+                            if (result.isSuccessful) nativeProviders = user.providerData.map { it.providerId }.toSet()
+                            finish(if (result.isSuccessful) null else "연결을 해제하지 못했습니다. 다시 로그인한 뒤 시도해 주세요.")
+                        }
+                    }
+                }) { Text(if (working) "해제 중…" else "연결 해제") }
+            },
+            dismissButton = { TextButton(enabled = !working, onClick = { unlinkTarget = null }) { Text("취소") } },
+        )
+    }
+    val googleLinked = GoogleAuthProvider.PROVIDER_ID in nativeProviders
+    val githubLinked = "github.com" in nativeProviders
 
     fun oauth(providerId: String, label: String) {
         if (activity == null) { onMessage("인증 화면을 열 수 없습니다."); return }
-        onBusy(true)
+        setBusy(true)
         onMessage(null)
         val provider = OAuthProvider.newBuilder(providerId).apply {
             if (providerId == "github.com") scopes = listOf("user:email")
@@ -435,7 +519,7 @@ private fun SocialProviderButtons(
         val task = if (currentUser == null) auth.startActivityForSignInWithProvider(activity, provider)
         else currentUser.startActivityForLinkWithProvider(activity, provider)
         task.addOnCompleteListener {
-            onBusy(false)
+            setBusy(false)
             if (!it.isSuccessful) {
                 onMessage(
                     if (providerId == "github.com") {
@@ -445,19 +529,22 @@ private fun SocialProviderButtons(
                     },
                 )
             }
-            else onMessage("$label 계정이 연결되었습니다.")
+            else { revision++; onMessage("$label 계정이 연결되었습니다.") }
         }
     }
 
-    OutlinedButton(
+    SocialProviderRow(
+        label = "Google", logo = R.drawable.ic_social_google, linked = googleLinked,
+        settingsMode = currentUser != null, enabled = !working,
+        onUnlink = { requestUnlink("google.com", "Google") },
         onClick = {
             val clientIdId = resources.getIdentifier("default_web_client_id", "string", context.packageName)
             if (clientIdId == 0) {
                 onMessage("Google OAuth 웹 클라이언트가 아직 Firebase에 등록되지 않았습니다.")
-                return@OutlinedButton
+                return@SocialProviderRow
             }
             val clientId = resources.getString(clientIdId)
-            onBusy(true)
+            setBusy(true)
             scope.launch {
                 runCatching {
                     val option = GetGoogleIdOption.Builder()
@@ -478,59 +565,96 @@ private fun SocialProviderButtons(
                 }.fold(onSuccess = { credential ->
                     val task = if (currentUser == null) auth.signInWithCredential(credential) else currentUser.linkWithCredential(credential)
                     task.addOnCompleteListener {
-                        onBusy(false)
+                        setBusy(false)
                         if (!it.isSuccessful) onMessage("Google 인증을 완료하지 못했습니다.")
-                        else onMessage("Google 계정이 연결되었습니다.")
+                        else { revision++; onMessage("Google 계정이 연결되었습니다.") }
                     }
                 }, onFailure = {
-                    onBusy(false)
+                    setBusy(false)
                     onMessage("Google 인증이 취소되었거나 설정되지 않았습니다.")
                 })
             }
         },
-        enabled = !googleLinked,
-        modifier = Modifier.fillMaxWidth(),
-    ) { Text(if (googleLinked) "Google · 연결됨" else "Google로 계속") }
-    OutlinedButton(onClick = { oauth("github.com", "GitHub") }, enabled = !githubLinked, modifier = Modifier.fillMaxWidth()) {
-        Text(if (githubLinked) "GitHub · 연결됨" else "GitHub로 계속")
-    }
+    )
+    SocialProviderRow(
+        label = "GitHub", logo = R.drawable.ic_social_github, linked = githubLinked,
+        settingsMode = currentUser != null, enabled = !working,
+        onClick = { oauth("github.com", "GitHub") }, onUnlink = { requestUnlink("github.com", "GitHub") },
+    )
     listOf("kakao" to "Kakao", "naver" to "Naver").forEach { (provider, label) ->
-    OutlinedButton(
-        onClick = {
-            fun start(token: String?) {
-                val (verifier, challenge) = newNaverPkce()
-                context.getSharedPreferences("auth_recovery", Context.MODE_PRIVATE).edit()
-                    .putString("${provider}_code_verifier", verifier).apply()
-                scope.launch {
-                    StudentAccountRepository().startSocial(provider, token, challenge).fold(
-                        onSuccess = { authorizeUrl ->
-                            onBusy(false)
-                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(authorizeUrl)))
-                        },
-                        onFailure = {
-                            context.getSharedPreferences("auth_recovery", Context.MODE_PRIVATE).edit()
-                                .remove("${provider}_code_verifier").apply()
-                            onBusy(false)
-                            onMessage(it.message ?: "$label 인증 서버를 열지 못했습니다.")
-                        },
-                    )
+        SocialProviderRow(
+            label = label, logo = if (provider == "kakao") R.drawable.ic_social_kakao else R.drawable.ic_social_naver,
+            linked = remoteLinks[provider] == true, settingsMode = currentUser != null,
+            statusKnown = currentUser == null || remoteLinks[provider] != null,
+            onRetry = { revision++ }, enabled = !working,
+            onUnlink = { requestUnlink(provider, label) },
+            onClick = {
+                fun start(token: String?) {
+                    val (verifier, challenge) = newNaverPkce()
+                    context.getSharedPreferences("auth_recovery", Context.MODE_PRIVATE).edit()
+                        .putString("${provider}_code_verifier", verifier).apply()
+                    scope.launch {
+                        StudentAccountRepository().startSocial(provider, token, challenge).fold(
+                            onSuccess = { authorizeUrl ->
+                                setBusy(false)
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(authorizeUrl)))
+                            },
+                            onFailure = {
+                                context.getSharedPreferences("auth_recovery", Context.MODE_PRIVATE).edit()
+                                    .remove("${provider}_code_verifier").apply()
+                                setBusy(false)
+                                onMessage(it.message ?: "$label 인증 서버를 열지 못했습니다.")
+                            },
+                        )
+                    }
                 }
-            }
-            onBusy(true)
-            onMessage(null)
-            if (currentUser == null) start(null)
-            else currentUser.getIdToken(true).addOnCompleteListener { task ->
-                val token = task.result?.token
-                if (token == null) {
-                    onBusy(false)
-                    onMessage("로그인 정보를 갱신하지 못했습니다.")
-                } else start(token)
-            }
-        },
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Text("${label}로 계속")
+                setBusy(true)
+                onMessage(null)
+                if (currentUser == null) start(null)
+                else currentUser.getIdToken(true).addOnCompleteListener { task ->
+                    val token = task.result?.token
+                    if (token == null) {
+                        setBusy(false)
+                        onMessage("로그인 정보를 갱신하지 못했습니다.")
+                    } else start(token)
+                }
+            },
+        )
     }
+}
+
+@Composable
+private fun SocialProviderRow(
+    label: String,
+    logo: Int,
+    linked: Boolean,
+    settingsMode: Boolean,
+    enabled: Boolean,
+    statusKnown: Boolean = true,
+    onRetry: () -> Unit = {},
+    onUnlink: () -> Unit,
+    onClick: () -> Unit,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+    ) {
+        Row(Modifier.padding(horizontal = 14.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Surface(color = if (label == "Kakao") Color(0xFFFEE500) else Color.White, shape = RoundedCornerShape(14.dp)) {
+                Image(painterResource(logo), contentDescription = "$label 로고", modifier = Modifier.padding(12.dp).size(26.dp))
+            }
+            Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                Text(label, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                Text(
+                    if (!settingsMode) "$label 계정으로 간편하게" else if (!statusKnown) "연결 상태 확인 필요" else if (linked) "연결됨 · 눌러서 해제" else "계정 연결로 간편 로그인",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp,
+                )
+            }
+            TextButton(enabled = enabled, onClick = { if (!statusKnown) onRetry() else if (settingsMode && linked) onUnlink() else onClick() }) {
+                Text(if (!statusKnown) "새로고침" else if (settingsMode && linked) "연결됨" else if (settingsMode) "연결" else "계속", color = SchoolBlue, fontWeight = FontWeight.SemiBold)
+            }
+        }
     }
 }
 

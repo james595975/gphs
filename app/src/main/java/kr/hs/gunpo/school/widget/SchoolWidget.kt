@@ -48,6 +48,7 @@ private fun WidgetContent(className: String, moment: SchoolMoment) {
     val (eyebrow, title, detail) = when (moment) {
         is SchoolMoment.InClass -> Triple("현재 ${moment.lesson.period}교시", moment.lesson.subject, "${SchoolTimeline.clock(moment.lesson.endMinute)} 종료${moment.next?.let { " · 다음 ${it.subject}" } ?: ""}")
         is SchoolMoment.BetweenClasses -> Triple("쉬는 시간", "다음 ${moment.next.subject}", "${SchoolTimeline.clock(moment.next.startMinute)} 시작 · ${moment.next.room}")
+        is SchoolMoment.LunchBreak -> Triple("점심시간", "12:10–13:10", moment.next?.let { "다음 ${it.period}교시 ${it.subject}" } ?: "오후 수업 없음")
         is SchoolMoment.BeforeSchool -> Triple("수업 시작 전", moment.next.subject, "${SchoolTimeline.clock(moment.next.startMinute)} 시작")
         is SchoolMoment.Finished -> Triple("수업 종료", "오늘도 수고했어요", "마지막 ${moment.last.subject}")
         SchoolMoment.NoSchool -> Triple("군포고 학교생활", "오늘 수업 없음", "학사 일정을 확인하세요")

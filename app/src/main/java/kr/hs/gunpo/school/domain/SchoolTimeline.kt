@@ -8,25 +8,32 @@ import java.time.LocalDateTime
 sealed interface SchoolMoment {
     data class InClass(val lesson: Lesson, val next: Lesson?) : SchoolMoment
     data class BetweenClasses(val previous: Lesson, val next: Lesson) : SchoolMoment
+    data class LunchBreak(val next: Lesson?) : SchoolMoment
     data class BeforeSchool(val next: Lesson) : SchoolMoment
     data class Finished(val last: Lesson) : SchoolMoment
     data object NoSchool : SchoolMoment
 }
 
 object SchoolTimeline {
+    const val LUNCH_START_MINUTE = 12 * 60 + 10
+    const val LUNCH_END_MINUTE = 13 * 60 + 10
     private const val DEFAULT_SCHOOL_END_MINUTE = 16 * 60
 
     fun moment(at: LocalDateTime, lessons: List<Lesson>): SchoolMoment {
         if (lessons.isEmpty()) return SchoolMoment.NoSchool
         val minute = at.hour * 60 + at.minute
-        lessons.forEachIndexed { index, lesson ->
-            if (minute in lesson.startMinute until lesson.endMinute) return SchoolMoment.InClass(lesson, lessons.getOrNull(index + 1))
+        val ordered = lessons.sortedBy(Lesson::startMinute)
+        ordered.forEachIndexed { index, lesson ->
+            if (minute in lesson.startMinute until lesson.endMinute) return SchoolMoment.InClass(lesson, ordered.getOrNull(index + 1))
         }
-        if (minute < lessons.first().startMinute) return SchoolMoment.BeforeSchool(lessons.first())
-        lessons.zipWithNext().firstOrNull { minute in it.first.endMinute until it.second.startMinute }?.let {
+        if (minute in LUNCH_START_MINUTE until LUNCH_END_MINUTE && ordered.any { it.endMinute <= LUNCH_START_MINUTE }) {
+            return SchoolMoment.LunchBreak(ordered.firstOrNull { it.startMinute > minute })
+        }
+        if (minute < ordered.first().startMinute) return SchoolMoment.BeforeSchool(ordered.first())
+        ordered.zipWithNext().firstOrNull { minute in it.first.endMinute until it.second.startMinute }?.let {
             return SchoolMoment.BetweenClasses(it.first, it.second)
         }
-        return SchoolMoment.Finished(lessons.last())
+        return SchoolMoment.Finished(ordered.last())
     }
 
     fun clock(minute: Int) = "%02d:%02d".format(minute / 60, minute % 60)

@@ -8,6 +8,26 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 
 class SchoolTimelineTest {
+    @Test fun `점심 시작과 종료 경계에서 상태가 바뀐다`() {
+        val day = LocalDate.of(2026, 9, 8)
+        val schedule = listOf(Lesson(5, "영어", 790, 840), Lesson(4, "국어", 680, 730))
+        assertTrue(SchoolTimeline.moment(day.atTime(12, 9), schedule) is SchoolMoment.InClass)
+        assertTrue(SchoolTimeline.moment(day.atTime(12, 10), schedule) is SchoolMoment.LunchBreak)
+        val lunch = SchoolTimeline.moment(day.atTime(13, 9), schedule) as SchoolMoment.LunchBreak
+        assertEquals(5, lunch.next?.period)
+        assertTrue(SchoolTimeline.moment(day.atTime(13, 10), schedule) is SchoolMoment.InClass)
+    }
+
+    @Test fun `학력평가는 수학과 영어 사이를 점심으로 표시한다`() {
+        val schedule = listOf(Lesson(2, "수학", 630, 730), Lesson(3, "영어", 790, 860))
+        assertTrue(SchoolTimeline.moment(LocalDate.of(2026, 9, 2).atTime(12, 30), schedule) is SchoolMoment.LunchBreak)
+    }
+
+    @Test fun `점심 시간대라도 진행 중인 수업과 휴교는 덮어쓰지 않는다`() {
+        val now = LocalDate.of(2026, 9, 8).atTime(12, 30)
+        assertTrue(SchoolTimeline.moment(now, listOf(Lesson(1, "시험", 720, 780))) is SchoolMoment.InClass)
+        assertTrue(SchoolTimeline.moment(now, emptyList()) is SchoolMoment.NoSchool)
+    }
     private val lessons = listOf(
         Lesson(1, "대수", 500, 550),
         Lesson(2, "영어", 560, 610),

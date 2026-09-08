@@ -11,7 +11,7 @@ Firebase 프로젝트 `gphs-beta`에서 다음 공급자를 활성화합니다.
 - 전화번호
 - Google
 - GitHub
-- OpenID Connect 공급자 ID `oidc.kakao`
+- 카카오·네이버는 Worker OAuth와 Firebase Custom Token을 사용하므로 별도 OIDC 공급자는 필요 없습니다.
 
 Google은 Android 앱의 SHA-1/SHA-256을 등록하고 새 `google-services.json`을 내려받아
 `app/google-services.json`을 교체해야 합니다. 파일에 `default_web_client_id`가 생겨야 앱의 Google 버튼이 활성화됩니다.
@@ -37,15 +37,16 @@ Authentication → Sign-in method → GitHub에 입력하고 활성화합니다.
 Android 앱에서는 Firebase SDK가 이 Redirect URI와 `state` 검증을 관리하므로 별도의
 `gunposchool://...` GitHub Redirect URI를 추가하지 않습니다.
 
-Kakao Developers에서 OpenID Connect를 활성화하고 REST API 키와 Client Secret을 만든 뒤,
-Firebase Identity Platform의 OIDC 공급자에 아래 issuer를 등록합니다.
+Kakao Developers에서 카카오 로그인을 활성화하고 REST API 키와 Client Secret을 등록합니다.
+REST API 키의 카카오 로그인 Redirect URI:
 
 ```text
-Provider ID: oidc.kakao
-Issuer: https://kauth.kakao.com
+https://gunpo-school.hjs595975.workers.dev/v1/auth/kakao/callback
 ```
 
-Kakao OIDC는 Firebase Authentication with Identity Platform 업그레이드가 필요합니다.
+현재 카카오 로그인에는 Firebase OIDC 업그레이드가 필요하지 않습니다.
+앱 → Worker start → 카카오 로그인 → Worker callback → 앱의 일회성 코드 교환 → Firebase 로그인 순서입니다.
+기존 학생 계정에서 연결한 경우 동일 Firebase UID를 유지하며, 다른 계정에 연결된 카카오는 중복 연결할 수 없습니다.
 
 ## Cloudflare Worker secrets
 
@@ -56,6 +57,8 @@ cd cloudflare
 pnpm wrangler secret put FIREBASE_WEB_API_KEY
 pnpm wrangler secret put NAVER_CLIENT_ID
 pnpm wrangler secret put NAVER_CLIENT_SECRET
+pnpm wrangler secret put KAKAO_REST_API_KEY
+pnpm wrangler secret put KAKAO_CLIENT_SECRET
 pnpm wrangler secret put FIREBASE_SERVICE_ACCOUNT_EMAIL
 pnpm wrangler secret put FIREBASE_SERVICE_ACCOUNT_PRIVATE_KEY
 ```
@@ -67,7 +70,15 @@ https://gunpo-school.hjs595975.workers.dev/v1/auth/naver/callback
 ```
 
 Firebase 서비스 계정은 사용자 생성 권한을 최소 범위로 부여하고 키를 주기적으로 교체합니다.
-Naver 키 또는 서비스 계정 키가 없으면 앱 버튼은 서버의 `503` 안내를 그대로 표시합니다.
+각 공급자 키 또는 서비스 계정 키가 없으면 앱 버튼은 서버의 `503` 안내를 표시합니다.
+기존 `naver_auth_sessions`, `naver_login_codes` 테이블을 공유하며, 해시 입력에 공급자를 포함하여 요청을 분리합니다.
+로컬 회귀 검증: `node scripts/test-social-auth.cjs` (Node 22 이상, 실제 인증 서버 호출 없음).
+
+계정 설정은 Google/GitHub의 Firebase 연결 상태와 카카오/네이버의 Worker `GET /v1/auth/{provider}/status`를 함께 조회합니다.
+앱 복귀 및 Firebase 토큰 갱신 시 다시 조회하며, 실패는 미연결로 처리하지 않습니다.
+연결됨 버튼의 확인창에서 해제하면 Google/GitHub는 Firebase `unlink`, 카카오/네이버는
+`DELETE /v1/auth/{provider}/status`로 GPHS 로그인 연결을 제거합니다.
+카카오/네이버 해제에는 최근 로그인과 다른 로그인 방법이 필요합니다. 공급자 웹사이트의 동의 철회와는 별개입니다.
 
 ## 이메일 링크
 

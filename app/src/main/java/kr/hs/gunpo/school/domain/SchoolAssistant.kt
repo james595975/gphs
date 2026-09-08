@@ -67,6 +67,7 @@ object SchoolAssistant {
             }            "지금" in query || "현재" in query || "몇교시" in query -> when (val moment = SchoolTimeline.moment(now, lessons)) {
                 is SchoolMoment.InClass -> "지금은 ${moment.lesson.period}교시 ${moment.lesson.subject} 수업 중이에요. ${SchoolTimeline.clock(moment.lesson.endMinute)}에 끝나요.${courseNote(moment.lesson.subject)}"
                 is SchoolMoment.BetweenClasses -> "지금은 쉬는 시간이에요. ${SchoolTimeline.clock(moment.next.startMinute)}에 ${moment.next.period}교시 ${moment.next.subject}이 시작해요."
+                is SchoolMoment.LunchBreak -> "지금은 점심시간이에요. 점심시간은 12:10부터 13:10까지예요.${moment.next?.let { " 다음은 ${it.period}교시 ${it.subject}입니다." } ?: ""}"
                 is SchoolMoment.BeforeSchool -> "아직 수업 전이에요. ${SchoolTimeline.clock(moment.next.startMinute)}에 ${moment.next.subject} 수업이 시작해요."
                 is SchoolMoment.Finished -> "오늘 수업은 모두 끝났어요."
                 SchoolMoment.NoSchool -> "오늘은 등록된 수업이 없어요."

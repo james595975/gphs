@@ -24,16 +24,21 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.time.LocalDateTime
 import java.time.ZoneId
 
 object SchoolNotificationManager {
-    private const val CHANNEL_ID = "school_live_status"
+    private const val CHANNEL_ID = "school_period_changes_v2"
     private const val NOTIFICATION_ID = 20423
     private const val REQUEST_CODE = 20424
     private const val SYNC_RETRY_MINUTES = 15L
+    private val refreshMutex = Mutex()
 
-    suspend fun refresh(context: Context) {
+    suspend fun refresh(context: Context) = refreshMutex.withLock { refreshLocked(context) }
+
+    private suspend fun refreshLocked(context: Context) {
         val settings = SettingsRepository(context).settings.first()
         if (!settings.liveUpdatesEnabled) return stop(context)
         if (!settings.isProfileConfigured) return stop(context)
@@ -50,8 +55,14 @@ object SchoolNotificationManager {
                 forceServerSync = false,
             )
         val schedule = NotificationScheduleResolver.resolve(now.toLocalDate(), settings, neisState)
+        val moment = SchoolTimeline.moment(now, schedule.lessons)
+        val preferences = context.getSharedPreferences("lesson_alerts", Context.MODE_PRIVATE)
+        val eventKey = if (schedule.isAvailable) NotificationTransitionPolicy.alertKey(now, moment)?.let {
+            "${settings.grade}:${settings.classNumber}:$it"
+        } else null
+        val shouldAlert = eventKey != null && eventKey != preferences.getString("last_alert", null)
         val (title, text) = if (schedule.isAvailable) {
-            notificationText(SchoolTimeline.moment(now, schedule.lessons))
+            notificationText(moment)
         } else {
             "시간표 동기화 대기 중" to "Cloudflare 연결을 확인한 뒤 자동으로 다시 시도합니다."
         }
@@ -68,12 +79,14 @@ object SchoolNotificationManager {
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setContentIntent(openApp)
             .setOngoing(true)
-            .setOnlyAlertOnce(true)
+            .setOnlyAlertOnce(!shouldAlert)
+            .setSilent(!shouldAlert)
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setRequestPromotedOngoing(true)
         if (NotificationManagerCompat.from(context).areNotificationsEnabled()) {
             NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, builder.build())
+            if (shouldAlert) preferences.edit().putString("last_alert", eventKey).apply()
         }
         SchoolWidget().updateAll(context)
         if (schedule.isAvailable) {
@@ -90,6 +103,8 @@ object SchoolNotificationManager {
     }
 
     private fun notificationText(moment: SchoolMoment): Pair<String, String> = when (moment) {
+        is SchoolMoment.LunchBreak -> "점심시간" to
+            "12:10–13:10${moment.next?.let { " · 다음 ${it.period}교시 ${it.subject} ${SchoolTimeline.clock(it.startMinute)} 시작" } ?: " · 오후 수업 없음"}"
         is SchoolMoment.InClass -> "${moment.lesson.period}교시 ${moment.lesson.subject}" to
             "${SchoolTimeline.clock(moment.lesson.endMinute)} 종료${moment.next?.let { " · 다음 ${it.period}교시 ${it.subject}" } ?: ""}"
         is SchoolMoment.BetweenClasses -> "쉬는 시간" to
@@ -101,19 +116,19 @@ object SchoolNotificationManager {
     }
 
     private fun scheduleNext(context: Context, now: LocalDateTime, lessons: List<Lesson>) {
-        val minute = now.hour * 60 + now.minute
-        val nextMinute = lessons.flatMap { listOf(it.startMinute, it.endMinute) }.firstOrNull { it > minute }
-        val next = if (nextMinute != null) {
-            now.toLocalDate().atStartOfDay().plusMinutes(nextMinute.toLong()).plusSeconds(2)
-        } else {
-            now.toLocalDate().plusDays(1).atTime(7, 30)
-        }
-        scheduleAt(context, next)
+        scheduleAt(context, NotificationTransitionPolicy.nextBoundary(now, lessons))
     }
 
     private fun scheduleAt(context: Context, next: LocalDateTime) {
-        val millis = next.atZone(ZoneId.of("Asia/Seoul")).toInstant().toEpochMilli()
-        context.getSystemService(AlarmManager::class.java).setAndAllowWhileIdle(
+        val millis = System.currentTimeMillis() + java.time.Duration.between(NetworkClock.now(), next).toMillis().coerceAtLeast(0)
+        val alarm = context.getSystemService(AlarmManager::class.java)
+        if (alarm.canScheduleExactAlarms()) {
+            try {
+                alarm.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, millis, pendingReceiver(context))
+                return
+            } catch (_: SecurityException) { /* Permission may have been revoked since the check. */ }
+        }
+        alarm.setAndAllowWhileIdle(
             AlarmManager.RTC_WAKEUP,
             millis,
             pendingReceiver(context),
@@ -130,10 +145,9 @@ object SchoolNotificationManager {
     private fun createChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             context.getSystemService(NotificationManager::class.java).createNotificationChannel(
-                NotificationChannel(CHANNEL_ID, "현재 수업 상태", NotificationManager.IMPORTANCE_DEFAULT).apply {
-                    description = "현재 교시와 다음 수업을 실시간으로 표시합니다."
-                    setSound(null, null)
-                    enableVibration(false)
+                NotificationChannel(CHANNEL_ID, "교시 변경·점심시간", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                    description = "매 교시 시작과 점심시간에 알리고 현재 수업 상태를 표시합니다."
+                    enableVibration(true)
                 },
             )
         }

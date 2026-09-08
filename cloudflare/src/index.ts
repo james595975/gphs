@@ -1120,8 +1120,8 @@ async function completeSocialAuthentication(request: Request, env: Env, provider
     if (linked) firebaseUid = await decryptSecretText(env, linked.firebase_uid_ciphertext, linked.firebase_uid_iv);
   }
   if (!firebaseUid) {
-    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(naverId)));
-    firebaseUid = `${provider}_${bytesToHex(digest).slice(0, 48)}`;
+    // A removed identity must not recreate the old Firebase UID on its next login.
+    firebaseUid = `${provider}_${randomUrlToken()}`;
   }
 
   const encryptedUid = await encryptSecretText(env, firebaseUid);
@@ -1152,7 +1152,11 @@ async function completeSocialAuthentication(request: Request, env: Env, provider
        code_hash, code_challenge, custom_token_ciphertext, custom_token_iv, expires_at, created_at
      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
   ).bind(exchangeHash, session.code_challenge, encryptedToken.ciphertext, encryptedToken.iv, now + 2 * 60 * 1000, now).run();
-  return Response.redirect(`gunposchool://auth/${provider}?code=${encodeURIComponent(exchangeCode)}`, 302);
+  const mode = session.firebase_uid_ciphertext && session.firebase_uid_iv ? "link" : "login";
+  return Response.redirect(
+    `gunposchool://auth/${provider}?code=${encodeURIComponent(exchangeCode)}&mode=${mode}`,
+    302,
+  );
 }
 
 async function exchangeSocialLoginCode(request: Request, env: Env, provider: SocialProvider): Promise<Response> {
@@ -1184,6 +1188,38 @@ async function socialLinkStatus(request: Request, env: Env, provider: SocialProv
     (provider === "kakao" ? env.KAKAO_REST_API_KEY && env.KAKAO_CLIENT_SECRET : env.NAVER_CLIENT_ID && env.NAVER_CLIENT_SECRET) &&
     env.FIREBASE_SERVICE_ACCOUNT_EMAIL && env.FIREBASE_SERVICE_ACCOUNT_PRIVATE_KEY
   )});
+}
+
+async function removeSocialLinks(env: Env, uid: string, provider: SocialProvider): Promise<void> {
+  const subjectHash = await profileSubjectHash(env, uid);
+  // Legacy mappings contain encrypted UIDs, so resolve ownership before deleting exact keys.
+  const rows = await env.PROFILE_DB.prepare(
+    "SELECT provider_user_hash, firebase_uid_ciphertext, firebase_uid_iv FROM social_identity_links WHERE provider = ?1",
+  ).bind(provider).all<{provider_user_hash: string; firebase_uid_ciphertext: string; firebase_uid_iv: string}>();
+  const deletes: D1PreparedStatement[] = [];
+  for (const row of rows.results) {
+    if (await decryptSecretText(env, row.firebase_uid_ciphertext, row.firebase_uid_iv) === uid) {
+      deletes.push(env.PROFILE_DB.prepare(
+        "DELETE FROM social_identity_links WHERE provider = ?1 AND provider_user_hash = ?2 AND firebase_uid_ciphertext = ?3",
+      ).bind(provider, row.provider_user_hash, row.firebase_uid_ciphertext));
+    }
+  }
+  deletes.push(env.PROFILE_DB.prepare(
+    "DELETE FROM firebase_social_links WHERE provider_subject_hash = ?1 AND provider = ?2",
+  ).bind(subjectHash, provider));
+  await env.PROFILE_DB.batch(deletes);
+}
+
+async function unlinkSocial(request: Request, env: Env, provider: SocialProvider): Promise<Response> {
+  const identity = await requireFirebaseIdentity(request, env, 10 * 60);
+  const authorization = request.headers.get("authorization") || "";
+  const account = await firebaseIdentityToolkit(env, "accounts:lookup", {idToken: authorization.replace(/^Bearer\s+/i, "")});
+  const users = account.value.users as Array<{providerUserInfo?: Array<{providerId?: string}>}> | undefined;
+  if (!account.ok || !users?.[0]?.providerUserInfo?.some(p => ["password", "phone", "google.com", "github.com"].includes(p.providerId || ""))) {
+    throw new HttpError(409, "다른 로그인 방법을 먼저 등록한 뒤 연결을 해제해 주세요.");
+  }
+  await removeSocialLinks(env, identity.subject, provider);
+  return json({linked: false});
 }
 
 async function putStudentProfile(request: Request, env: Env): Promise<Response> {
@@ -1346,6 +1382,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     if (request.method === "GET" && action === "callback") return completeSocialAuthentication(request, env, provider);
     if (request.method === "POST" && action === "exchange") return exchangeSocialLoginCode(request, env, provider);
     if (request.method === "GET" && action === "status") return socialLinkStatus(request, env, provider);
+    if (request.method === "DELETE" && action === "status") return unlinkSocial(request, env, provider);
   }
 
   if (request.method === "GET" && url.pathname === "/v1/notices") {

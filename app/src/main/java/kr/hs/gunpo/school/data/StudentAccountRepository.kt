@@ -43,6 +43,14 @@ class StudentAccountRepository {
             .map { it.getString("authorizeUrl") }
     }
 
+    suspend fun socialLinked(provider: String, token: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        request("/v1/auth/$provider/status", "GET", null, token).map { it.getBoolean("linked") }
+    }
+
+    suspend fun unlinkSocial(provider: String, token: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        request("/v1/auth/$provider/status", "DELETE", null, token).map { !it.getBoolean("linked") }
+    }
+
     suspend fun exchangeSocial(provider: String, code: String, codeVerifier: String): Result<String> = publicRequest(
         "/v1/auth/$provider/exchange",
         JSONObject().put("code", code).put("codeVerifier", codeVerifier),

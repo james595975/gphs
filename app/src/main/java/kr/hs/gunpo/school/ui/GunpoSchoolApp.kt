@@ -99,6 +99,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.setValue
@@ -155,6 +156,7 @@ import kr.hs.gunpo.school.domain.HybridSchoolAssistant
 import kr.hs.gunpo.school.domain.AssistantConversationTurn
 import kr.hs.gunpo.school.domain.HomeMealPresentation
 import kr.hs.gunpo.school.domain.HomeMealSelector
+import kr.hs.gunpo.school.domain.HomeAcademicEventPolicy
 import kr.hs.gunpo.school.domain.NetworkClock
 import kr.hs.gunpo.school.domain.SchoolTimeline
 import kr.hs.gunpo.school.ui.theme.Navy
@@ -196,13 +198,6 @@ private fun effectiveEvents(settings: UserSettings, neisState: NeisState): List<
         .filter { it.grades.isEmpty() || settings.grade in it.grades }
         .sortedBy { it.start }
 
-private val homeEventKeywords = listOf(
-    "개학", "입학", "졸업", "시험", "평가", "수능", "체육", "축제", "행사", "상담", "설명회",
-)
-
-private fun isHomeHighlight(event: AcademicEvent): Boolean =
-    homeEventKeywords.any { keyword -> event.title.contains(keyword) }
-
 private fun effectiveLessons(date: LocalDate, settings: UserSettings, neisState: NeisState): List<Lesson> {
     AcademicSchedulePolicy.overrideFor(date, effectiveEvents(settings, neisState))?.let { return it.lessons }
     if (SchoolData.isVacation(date)) return SchoolData.lessonsFor(date, settings)
@@ -230,6 +225,14 @@ fun GunpoSchoolApp(
     val noticeState by viewModel.noticeState.collectAsStateWithLifecycle()
     val firebaseAuth = remember { FirebaseAuth.getInstance() }
     val context = LocalContext.current
+    val returnToSocialSettings = remember(incomingAuthLink) {
+        incomingAuthLink?.let { runCatching { Uri.parse(it) }.getOrNull() }
+            ?.takeIf { it.scheme == "gunposchool" && it.host == "auth" }
+            ?.getQueryParameter("mode") == "link"
+    }
+    var socialSettingsReturnPending by rememberSaveable(incomingAuthLink) {
+        mutableStateOf(returnToSocialSettings)
+    }
     var currentUser by remember { mutableStateOf(firebaseAuth.currentUser) }
     var registrationRequested by remember { mutableStateOf(false) }
     var profileMissing by remember { mutableStateOf(false) }
@@ -427,7 +430,16 @@ fun GunpoSchoolApp(
         return
     }
 
-    var selectedTab by remember(startDestination) { mutableStateOf(when (startDestination) { "timetable" -> MainTab.TIMETABLE; "meal" -> MainTab.MEAL; else -> MainTab.HOME }) }
+    var selectedTab by rememberSaveable(startDestination, incomingAuthLink) {
+        mutableStateOf(
+            when {
+                returnToSocialSettings -> MainTab.SETTINGS
+                startDestination == "timetable" -> MainTab.TIMETABLE
+                startDestination == "meal" -> MainTab.MEAL
+                else -> MainTab.HOME
+            },
+        )
+    }
     var openAssistant by remember(startDestination) { mutableStateOf(startDestination == "assistant") }
     var homeSelectionVersion by remember { mutableIntStateOf(0) }
     var lastBackPressedAt by remember { mutableLongStateOf(0L) }
@@ -474,7 +486,14 @@ fun GunpoSchoolApp(
             MainTab.TIMETABLE -> TimetableScreen(settings, neisState, networkNow, innerPadding, viewModel::loadNeisForWeek)
             MainTab.MEAL -> MealScreen(settings, neisState, networkNow.toLocalDate(), innerPadding, viewModel::loadNeisForMonth)
             MainTab.NOTICE -> NoticeScreen(noticeState, viewModel::refreshNotices, innerPadding)
-            MainTab.SETTINGS -> SettingsScreen(settings, neisState, viewModel, innerPadding)
+            MainTab.SETTINGS -> SettingsScreen(
+                settings,
+                neisState,
+                viewModel,
+                innerPadding,
+                openAccountInitially = socialSettingsReturnPending,
+                onAccountOpened = { socialSettingsReturnPending = false },
+            )
         }
     }
 }
@@ -530,10 +549,10 @@ private fun HomeScreen(settings: UserSettings, neisState: NeisState, noticeState
     val lessons = effectiveLessons(now.toLocalDate(), settings, neisState)
     val moment = SchoolTimeline.moment(now, lessons)
     val mealPresentation = HomeMealSelector.select(now, effectiveMeals(neisState))
-    val events = effectiveEvents(settings, neisState)
-        .filter { !it.end.isBefore(now.toLocalDate()) }
-        .filter(::isHomeHighlight)
-        .take(3)
+    val events = HomeAcademicEventPolicy.upcoming(
+        events = effectiveEvents(settings, neisState),
+        from = now.toLocalDate(),
+    )
 
     Column(Modifier.fillMaxSize().padding(padding)) {
         NavigationHeader("군포고등학교", badge = settings.className)
@@ -702,6 +721,7 @@ private fun ProfileHeader(settings: UserSettings, now: LocalDateTime) {
 private data class StatusUi(val label: String, val subject: String, val detail: String, val next: String?, val active: Boolean)
 
 private fun statusUi(moment: SchoolMoment): StatusUi = when (moment) {
+    is SchoolMoment.LunchBreak -> StatusUi("점심시간", "맛있게 드세요", "12:10–13:10", moment.next?.let { "${it.period}교시 · ${it.subject}" }, false)
     is SchoolMoment.InClass -> StatusUi("LIVE · ${moment.lesson.period}교시", moment.lesson.subject, "${timeRange(moment.lesson)} · ${moment.lesson.room}", moment.next?.let { "${it.period}교시 · ${it.subject}" } ?: "오늘 수업 완료", true)
     is SchoolMoment.BetweenClasses -> StatusUi("쉬는시간", "${moment.next.startMinute - moment.previous.endMinute}분 휴식", "다음 교시 준비", "${moment.next.period}교시 · ${moment.next.subject}", false)
     is SchoolMoment.BeforeSchool -> StatusUi("등교 전", "수업 준비", "${SchoolTimeline.clock(moment.next.startMinute)} 시작", "${moment.next.period}교시 · ${moment.next.subject}", false)
@@ -1343,10 +1363,23 @@ private fun NoticeSection(title: String, notices: List<Notice>, open: (Notice) -
 }
 
 @Composable
-private fun SettingsScreen(settings: UserSettings, neisState: NeisState, viewModel: MainViewModel, padding: PaddingValues) {
+private fun SettingsScreen(
+    settings: UserSettings,
+    neisState: NeisState,
+    viewModel: MainViewModel,
+    padding: PaddingValues,
+    openAccountInitially: Boolean = false,
+    onAccountOpened: () -> Unit = {},
+) {
     var detail by remember { mutableStateOf(false) }
     var profileDetail by remember { mutableStateOf(false) }
     var accountDetail by remember { mutableStateOf(false) }
+    LaunchedEffect(openAccountInitially) {
+        if (openAccountInitially) {
+            accountDetail = true
+            onAccountOpened()
+        }
+    }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -1427,7 +1460,7 @@ private fun SettingsScreen(settings: UserSettings, neisState: NeisState, viewMod
                     SettingsRow(
                         Icons.Default.Notifications,
                         if (settings.liveUpdatesEnabled) "수업 상태 알림 켜짐" else "수업 상태 알림 꺼짐",
-                        "현재 교시 · 종료 시각 · 다음 수업",
+                        "교시 시작마다 알림 · 점심시간 12:10–13:10",
                         if (settings.liveUpdatesEnabled) SchoolBlue else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     HorizontalDivider(Modifier.padding(start = 54.dp))
@@ -1442,6 +1475,9 @@ private fun SettingsScreen(settings: UserSettings, neisState: NeisState, viewMod
                         } else {
                             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                         }
+                    }
+                    SettingsActionRow(Icons.Default.Schedule, "교시 정시 알림 권한 설정") {
+                        context.startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:${context.packageName}")))
                     }
                 }
             }
