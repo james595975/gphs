@@ -6,13 +6,23 @@ import com.google.firebase.ai.ai
 import com.google.firebase.ai.type.GenerativeBackend
 import kr.hs.gunpo.school.BuildConfig
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CancellationException
+import java.time.Instant
 import java.util.concurrent.atomic.AtomicInteger
 
-data class AssistantAnswer(val text: String)
+data class AssistantAnswer(
+    val text: String,
+    val sources: List<ResearchSource> = emptyList(),
+    val researchedAt: Instant? = null,
+)
 data class AssistantConversationTurn(val question: String, val answer: String)
 
 object FirebaseCloudAssistant {
     private val schoolAnswerSequence = AtomicInteger(0)
+    private var lastFailureMessage: String? = null
+
+    fun connectionFailureMessage(): String = lastFailureMessage
+        ?: "현재 Gemini에 연결할 수 없어요. 네트워크와 Firebase 설정을 확인해 주세요. 무료 웹 검색도 이용할 수 있어요."
 
     fun isConfigured(): Boolean = BuildConfig.FIREBASE_CONFIGURED
 
@@ -72,17 +82,28 @@ object FirebaseCloudAssistant {
 
     private suspend fun generateWithFallback(prompt: String, operation: String): String? {
         val models = listOf(BuildConfig.FIREBASE_AI_MODEL, BuildConfig.FIREBASE_AI_FALLBACK_MODEL).distinct()
+        lastFailureMessage = null
         var lastError: Throwable? = null
         for ((modelIndex, modelName) in models.withIndex()) {
             repeat(2) { attempt ->
                 val result = runCatching {
-                    Firebase.ai(backend = GenerativeBackend.googleAI()).generativeModel(modelName)
+                    Firebase.ai(
+                        backend = GenerativeBackend.googleAI(),
+                        useLimitedUseAppCheckTokens = true,
+                    ).generativeModel(modelName)
                         .generateContent(prompt).text?.trim()?.takeIf { it.isNotBlank() }
                 }
                 result.getOrNull()?.let { return it }
                 lastError = result.exceptionOrNull()
+                if (lastError is CancellationException) throw lastError
                 if (lastError.isAppCheckFailure()) {
+                    lastFailureMessage = "Firebase 앱 인증에 실패해 Gemini를 사용할 수 없어요. 무료 웹 검색은 계속 이용할 수 있어요."
                     Log.e("FirebaseCloudAssistant", "$operation stopped: App Check failed", lastError)
+                    return null
+                }
+                if (lastError?.message.orEmpty().contains("prepayment credits", ignoreCase = true)) {
+                    lastFailureMessage = "Gemini API 선불 잔액이 없어 일반 답변을 사용할 수 없어요. 웹 검색을 켜면 무료 검색과 AI 요약을 이용할 수 있어요."
+                    Log.w("FirebaseCloudAssistant", "$operation stopped: Gemini prepayment unavailable")
                     return null
                 }
                 Log.w("FirebaseCloudAssistant", "$operation failed with $modelName (attempt ${attempt + 1})", lastError)
@@ -100,10 +121,37 @@ object HybridSchoolAssistant {
         factualAnswer: String,
         isSchoolQuestion: Boolean,
         history: List<AssistantConversationTurn> = emptyList(),
+        webSearchRequested: Boolean = false,
     ): AssistantAnswer {
         val previousQuestion = history.lastOrNull()?.question
         val schoolQuestion = isSchoolQuestion || SchoolAssistant.isSchoolFollowUp(question, previousQuestion)
         val contextualQuestion = withConversationContext(question, history)
+        if (webSearchRequested || AssistantResearchPolicy.requestsSearch(question)) {
+            return try {
+                val research = AssistantWebResearch.search(question)
+                val summary = try {
+                    Result.success(AssistantWebResearch.summarize(question, research))
+                } catch (exception: CancellationException) {
+                    throw exception
+                } catch (exception: Exception) {
+                    Result.failure<String>(exception)
+                }
+                val answer = summary.getOrNull() ?: buildString {
+                        append((summary.exceptionOrNull() as? ResearchUnavailableException)?.message ?: "무료 AI 요약에 연결할 수 없어요.")
+                        append("\n웹 검색은 완료했어요. 아래 검색 자료와 출처를 확인해 주세요.\n\n")
+                        research.sources.forEachIndexed { index, source ->
+                            append("[").append(index + 1).append("] ").append(source.title).append('\n')
+                            append(source.excerpt.replace(Regex("\\s+"), " ").take(220)).append("\n\n")
+                        }
+                    }.trim()
+                AssistantAnswer(answer, research.sources, research.checkedAt)
+            } catch (exception: CancellationException) {
+                throw exception
+            } catch (exception: Exception) {
+                AssistantAnswer((exception as? ResearchUnavailableException)?.message
+                    ?: "웹 검색에 연결할 수 없어요. 네트워크를 확인하고 다시 시도해 주세요.")
+            }
+        }
         val contextualFacts = if (schoolQuestion && !isSchoolQuestion) {
             history.lastOrNull()?.answer?.let { "직전 학교 정보 답변: $it" } ?: factualAnswer
         } else factualAnswer
@@ -112,7 +160,7 @@ object HybridSchoolAssistant {
             AssistantAnswer(FirebaseCloudAssistant.answerSchool(contextualQuestion, contextualFacts))
         } else {
             AssistantAnswer(FirebaseCloudAssistant.answerGeneral(contextualQuestion)
-                ?: "현재 Gemini에 연결할 수 없어요. 네트워크와 Firebase App Check 설정을 확인해 주세요.")
+                ?: FirebaseCloudAssistant.connectionFailureMessage())
         }
     }
 

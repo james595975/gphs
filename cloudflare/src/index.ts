@@ -1,9 +1,14 @@
 import * as cheerio from "cheerio";
+import {classAlignPage, lookupEnrollments} from "./enrollments";
+import {ResearchError, summarizeResearch} from "./research";
 import {decodeProtectedHeader, importPKCS8, importX509, jwtVerify, SignJWT, type JWTPayload} from "jose";
 
 interface Env {
+  AI: Ai;
   DB: D1Database;
   PROFILE_DB: D1Database;
+  ENROLLMENT_KEY: string;
+  ENROLLMENT_RATE_LIMIT: string;
   NEIS_API_KEY: string;
   FIREBASE_PROJECT_ID: string;
   PROFILE_ENCRYPTION_KEY: string;
@@ -1068,6 +1073,7 @@ async function firebaseCustomToken(env: Env, uid: string): Promise<string> {
 async function completeSocialAuthentication(request: Request, env: Env, provider: SocialProvider): Promise<Response> {
   requireSocialConfiguration(env, provider);
   const url = new URL(request.url);
+
   const state = url.searchParams.get("state") || "";
   const authorizationCode = url.searchParams.get("code") || "";
   if (!state || !authorizationCode || url.searchParams.get("error")) {
@@ -1337,6 +1343,15 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   if (request.method === "OPTIONS") return json({}, 204);
   const url = new URL(request.url);
 
+  if (request.method === "GET" && ["/", "/class-align", "/class-align/"].includes(url.pathname)) {
+    return classAlignPage();
+  }
+  if (url.pathname === "/v1/enrollments/lookup") return lookupEnrollments(request, env);
+  if (request.method === "POST" && url.pathname === "/v1/research/summary") {
+    const identity = await requireFirebaseIdentity(request, env);
+    return summarizeResearch(request, env, await hmac(env, `research:${identity.subject}`));
+  }
+
   if (request.method === "GET" && url.pathname === "/health") {
     return json({ok: true, service: "gunpo-school"});
   }
@@ -1458,6 +1473,7 @@ export default {
     } catch (error) {
       console.error(error);
       if (error instanceof HttpError) return json({error: error.message}, error.status);
+      if (error instanceof ResearchError) return json({error: error.message}, error.status);
       return json({error: "학교 데이터를 처리하지 못했습니다."}, 500);
     }
   },

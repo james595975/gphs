@@ -7,9 +7,11 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
+import kr.hs.gunpo.school.BuildConfig
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -67,6 +69,8 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.ZoomIn
+import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
@@ -119,6 +123,8 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.compose.ui.text.font.FontWeight
@@ -154,6 +160,8 @@ import kr.hs.gunpo.school.domain.SchoolMoment
 import kr.hs.gunpo.school.domain.SchoolAssistant
 import kr.hs.gunpo.school.domain.HybridSchoolAssistant
 import kr.hs.gunpo.school.domain.AssistantConversationTurn
+import kr.hs.gunpo.school.domain.AssistantAnswer
+import kr.hs.gunpo.school.domain.AssistantResearchPolicy
 import kr.hs.gunpo.school.domain.HomeMealPresentation
 import kr.hs.gunpo.school.domain.HomeMealSelector
 import kr.hs.gunpo.school.domain.HomeAcademicEventPolicy
@@ -585,16 +593,27 @@ private fun HomeScreen(settings: UserSettings, neisState: NeisState, noticeState
     }
 }
 
-private data class ChatMessage(val text: String, val fromUser: Boolean, val isThinking: Boolean = false)
+private data class ChatMessage(
+    val text: String,
+    val fromUser: Boolean,
+    val isThinking: Boolean = false,
+    val research: AssistantAnswer? = null,
+    val isResearching: Boolean = false,
+)
 
 @Composable
 private fun SchoolAssistantScreen(settings: UserSettings, neisState: NeisState, padding: PaddingValues, onDismiss: () -> Unit) {
     val messages = remember { mutableStateListOf(ChatMessage("안녕하세요! Gemini예요. 학교생활 정보와 일반 질문 모두 물어보세요.", false)) }
     var input by remember { mutableStateOf("") }
     var isAnswering by remember { mutableStateOf(false) }
+    var webSearchRequested by rememberSaveable { mutableStateOf(false) }
+    val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val scope = rememberCoroutineScope()
     val messageListState = rememberLazyListState()
-    val suggestions = listOf("오늘 시간표", "오늘 급식", "지금 몇 교시야?", "오늘 야자")
+    val suggestions = if (webSearchRequested) listOf("오늘 뉴스", "최신 AI 소식", "최근 교육 뉴스", "최신 과학 소식")
+        else listOf("오늘 시간표", "오늘 급식", "지금 몇 교시야?", "오늘 야자")
     val screenWidthDp = LocalConfiguration.current.screenWidthDp
     val messageMaxWidth = if (screenWidthDp >= 600) (screenWidthDp * .72f).dp else 310.dp
 
@@ -608,20 +627,30 @@ private fun SchoolAssistantScreen(settings: UserSettings, neisState: NeisState, 
             } else null
         }.takeLast(4)
         messages += ChatMessage(text.trim(), true)
-        messages += ChatMessage("", false, isThinking = true)
+        val researchRequested = webSearchRequested || AssistantResearchPolicy.requestsSearch(text)
+        messages += ChatMessage("", false, isThinking = true, isResearching = researchRequested)
         val answerIndex = messages.lastIndex
         input = ""
+        focusManager.clearFocus()
+        keyboardController?.hide()
         isAnswering = true
         scope.launch {
-            val now = NetworkClock.now()
-            val factual = SchoolAssistant.answer(text, now, settings, effectiveLessons(now.toLocalDate(), settings, neisState), effectiveMeals(neisState).filter { it.date == now.toLocalDate() })
-            val result = HybridSchoolAssistant.answer(text, factual, SchoolAssistant.isSchoolQuestion(text), history)
-            messages[answerIndex] = ChatMessage("", false)
-            result.text.forEachIndexed { index, character ->
-                messages[answerIndex] = ChatMessage(result.text.substring(0, index + 1), false)
-                delay(if (character in listOf('.', '!', '?', '。', '\n')) 65 else 14)
+            try {
+                val now = NetworkClock.now()
+                val factual = SchoolAssistant.answer(text, now, settings, effectiveLessons(now.toLocalDate(), settings, neisState), effectiveMeals(neisState).filter { it.date == now.toLocalDate() })
+                val result = HybridSchoolAssistant.answer(text, factual, SchoolAssistant.isSchoolQuestion(text), history, researchRequested)
+                if (researchRequested) {
+                    messages[answerIndex] = ChatMessage(result.text, false, research = result)
+                } else {
+                    messages[answerIndex] = ChatMessage("", false)
+                    result.text.forEachIndexed { index, character ->
+                        messages[answerIndex] = ChatMessage(result.text.substring(0, index + 1), false)
+                        delay(if (character in listOf('.', '!', '?', '。', '\n')) 65 else 14)
+                    }
+                }
+            } finally {
+                isAnswering = false
             }
-            isAnswering = false
         }
     }
 
@@ -631,6 +660,16 @@ private fun SchoolAssistantScreen(settings: UserSettings, neisState: NeisState, 
     Surface(Modifier.fillMaxSize().padding(padding), color = MaterialTheme.colorScheme.background) {
         Column(Modifier.fillMaxSize()) {
             NavigationHeader("Gemini", badge = "Gemini", onBack = onDismiss)
+            Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                FilterChip(
+                    selected = webSearchRequested,
+                    enabled = !isAnswering,
+                    onClick = { webSearchRequested = !webSearchRequested },
+                    label = { Text("웹 검색") },
+                )
+                Text("최신·검색 질문은 자동으로 웹을 확인해요", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+            }
+            Text("Tavily 검색 + Cloudflare 요약 무료 한도 (요약 하루 10회) · 일반 답변: Gemini", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 18.dp, vertical = 3.dp))
             LazyColumn(
                 state = messageListState,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -645,8 +684,27 @@ private fun SchoolAssistantScreen(settings: UserSettings, neisState: NeisState, 
                             shadowElevation = if (message.fromUser) 0.dp else 1.dp,
                             modifier = Modifier.widthIn(max = messageMaxWidth),
                         ) {
-                            if (message.isThinking) ThinkingIndicator()
-                            else Text(message.text, Modifier.padding(horizontal = 15.dp, vertical = 11.dp), color = if (message.fromUser) Color.White else MaterialTheme.colorScheme.onSurface, fontSize = 14.sp)
+                            if (message.isThinking) ThinkingIndicator(message.isResearching)
+                            else Column(Modifier.padding(horizontal = 15.dp, vertical = 11.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(message.text, color = if (message.fromUser) Color.White else MaterialTheme.colorScheme.onSurface, fontSize = 14.sp)
+                                message.research?.takeIf { it.sources.isNotEmpty() }?.let { answer ->
+                                    HorizontalDivider()
+                                    val checkedAt = answer.researchedAt?.atZone(java.time.ZoneId.of("Asia/Seoul"))
+                                        ?.format(DateTimeFormatter.ofPattern("M월 d일 HH:mm"))
+                                    Text("웹 검색 출처 · $checkedAt 확인", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+                                    answer.sources.forEachIndexed { index, source ->
+                                        Text(
+                                            "[${index + 1}] ${source.title} ↗",
+                                            color = SchoolBlue,
+                                            fontSize = 12.sp,
+                                            modifier = Modifier.fillMaxWidth().clickable {
+                                                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(source.url))) }
+                                                    .onFailure { Toast.makeText(context, "출처 링크를 열 수 없어요.", Toast.LENGTH_SHORT).show() }
+                                            }.padding(vertical = 8.dp),
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -668,7 +726,7 @@ private fun SchoolAssistantScreen(settings: UserSettings, neisState: NeisState, 
                             true
                         } else false
                     },
-                    placeholder = { Text("Gemini에게 질문하기") },
+                    placeholder = { Text(if (webSearchRequested) "웹에서 확인할 질문" else "Gemini에게 질문하기") },
                     singleLine = false,
                     maxLines = 5,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
@@ -680,14 +738,14 @@ private fun SchoolAssistantScreen(settings: UserSettings, neisState: NeisState, 
     }
 }
 @Composable
-private fun ThinkingIndicator() {
+private fun ThinkingIndicator(isResearching: Boolean = false) {
     val transition = rememberInfiniteTransition(label = "Gemini thinking")
     val phase by transition.animateFloat(initialValue = 0f, targetValue = 3f, animationSpec = infiniteRepeatable(animation = tween(900)), label = "Thinking dots")
     Row(Modifier.padding(horizontal = 15.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         repeat(3) { index ->
             Box(Modifier.size(7.dp).alpha(if (phase.toInt().coerceIn(0, 2) == index) 1f else .28f).background(SchoolBlue, CircleShape))
         }
-        Text("Gemini가 답변을 생각하고 있어요", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(start = 4.dp))
+        Text(if (isResearching) "웹 자료를 검색하고 확인하고 있어요" else "Gemini가 답변을 생각하고 있어요", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(start = 4.dp))
     }
 }
 @Composable
@@ -872,14 +930,24 @@ private fun AcademicEventsScreen(settings: UserSettings, neisState: NeisState, t
 }
 
 @Composable
-private fun ClassAlignScreen(padding: PaddingValues, onBack: () -> Unit) = InternalWebScreen(
-    padding = padding,
-    title = "분반 확인",
-    badge = "Class Align",
-    initialUrl = "https://class-align.vercel.app/",
-    allowedHosts = setOf("class-align.vercel.app"),
-    onBack = onBack,
-)
+private fun ClassAlignScreen(padding: PaddingValues, onBack: () -> Unit) {
+    val baseUrl = BuildConfig.CLOUDFLARE_API_BASE_URL.trimEnd('/')
+    if (baseUrl.isBlank()) {
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            NavigationHeader("분반 확인", badge = "군포고", onBack = onBack)
+            Text("분반 조회 서버가 설정되지 않았습니다.", modifier = Modifier.padding(18.dp))
+        }
+        return
+    }
+    InternalWebScreen(
+        padding = padding,
+        title = "분반 확인",
+        badge = "군포고",
+        initialUrl = "$baseUrl/class-align",
+        allowedHosts = setOf(Uri.parse(baseUrl).host.orEmpty()),
+        onBack = onBack,
+    )
+}
 
 @Composable
 private fun InternalWebScreen(
@@ -888,6 +956,8 @@ private fun InternalWebScreen(
     badge: String,
     initialUrl: String,
     allowedHosts: Set<String>,
+    allowZoom: Boolean = false,
+    enableDownloads: Boolean = false,
     onBack: () -> Unit,
 ) {
     var webView by remember { mutableStateOf<WebView?>(null) }
@@ -909,6 +979,19 @@ private fun InternalWebScreen(
 
     Column(Modifier.fillMaxSize().padding(padding)) {
         NavigationHeader(title, badge = badge, onBack = ::navigateBack)
+        if (allowZoom) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("두 손가락으로 확대할 수 있어요.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+                IconButton(onClick = {
+                    val view = webView
+                    android.util.Log.d("GunpoWebZoom", "Zoom out: view=${view != null}, result=${view?.zoomOut()}")
+                }) { Icon(Icons.Default.ZoomOut, "축소") }
+                IconButton(onClick = {
+                    val view = webView
+                    android.util.Log.d("GunpoWebZoom", "Zoom in: view=${view != null}, result=${view?.zoomIn()}")
+                }) { Icon(Icons.Default.ZoomIn, "확대") }
+            }
+        }
         if (isLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
         AndroidView(
             modifier = Modifier.fillMaxSize(),
@@ -917,10 +1000,26 @@ private fun InternalWebScreen(
                     webView = this
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
-                    settings.setSupportZoom(false)
+                    settings.setSupportZoom(allowZoom)
+                    settings.builtInZoomControls = allowZoom
+                    settings.displayZoomControls = false
+                    settings.useWideViewPort = allowZoom
+                    settings.loadWithOverviewMode = allowZoom
+                    if (enableDownloads) setDownloadListener { url, agent, disposition, mime, _ ->
+                        downloadSchoolAttachment(this, url, agent, disposition, mime)
+                    }
+                    val noticeUserAgent = settings.userAgentString
                     webViewClient = object : WebViewClient() {
+                        override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                            return if (allowZoom) SchoolWebZoom.intercept(request, noticeUserAgent)
+                            else null
+                        }
                         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                             val uri = request.url
+                            if (enableDownloads && request.isForMainFrame && isSchoolAttachment(uri)) {
+                                downloadSchoolAttachment(view, uri.toString())
+                                return true
+                            }
                             val host = uri.host.orEmpty()
                             val isAllowed = uri.scheme == "https" && allowedHosts.any { host == it || host.endsWith(".$it") }
                             return if (isAllowed) {
@@ -933,6 +1032,15 @@ private fun InternalWebScreen(
 
                         override fun onPageFinished(view: WebView, url: String) {
                             isLoading = false
+                            if (allowZoom && allowedHosts.any { Uri.parse(url).host == it || Uri.parse(url).host?.endsWith(".$it") == true }) {
+                                view.evaluateJavascript("""
+                                    (function() {
+                                      var meta = document.querySelector('meta[name="viewport"]');
+                                      if (!meta) { meta = document.createElement('meta'); meta.name = 'viewport'; document.head.appendChild(meta); }
+                                      meta.content = 'width=device-width, initial-scale=1, minimum-scale=0.25, maximum-scale=5, user-scalable=yes';
+                                    })();
+                                """.trimIndent(), null)
+                            }
                         }
                     }
                     loadUrl(initialUrl)
@@ -1298,6 +1406,8 @@ private fun NoticeScreen(noticeState: NoticeState, refresh: () -> Unit, padding:
             badge = "학교 홈페이지",
             initialUrl = notice.url,
             allowedHosts = setOf("gunpo.hs.kr"),
+            allowZoom = true,
+            enableDownloads = true,
             onBack = { selectedNotice = null },
         )
         return

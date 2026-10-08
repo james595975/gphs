@@ -1,12 +1,25 @@
 {
   "name": "gunpo-school-data-worker",
   "private": true,
+  "packageManager": "pnpm@11.25.0",
+  "engines": {
+    "node": ">=22.22.0"
+  },
   "scripts": {
+    "enrollments:import": "node scripts/import-enrollments.mjs",
     "typecheck": "tsc --noEmit",
+    "test": "node scripts/test-social-auth.cjs && node scripts/test-research.cjs",
+    "test:local": "node scripts/check-local-worker.mjs",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run test:local && pnpm run build",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "db:migrate:local": "wrangler d1 migrations apply gunpo-school-data --local",
-    "db:migrate:remote": "wrangler d1 migrations apply gunpo-school-data --remote"
+    "db:migrate:local": "pnpm run db:data:migrate:local && pnpm run db:profiles:migrate:local",
+    "db:data:migrate:local": "wrangler d1 migrations apply gunpo-school-data --local",
+    "db:profiles:migrate:local": "wrangler d1 migrations apply gunpo-school-profiles --local",
+    "db:migrate:remote": "pnpm run db:data:migrate:remote && pnpm run db:profiles:migrate:remote",
+    "db:data:migrate:remote": "wrangler d1 migrations apply gunpo-school-data --remote",
+    "db:profiles:migrate:remote": "wrangler d1 migrations apply gunpo-school-profiles --remote"
   },
   "dependencies": {
     "cheerio": "1.2.0",

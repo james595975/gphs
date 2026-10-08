@@ -34,7 +34,7 @@ async function main() {
   const source = fs.readFileSync(new URL('../src/index.ts', `file://${__filename}`), 'utf8') +
     '\nexports.test = {startSocialAuthentication, completeSocialAuthentication, exchangeSocialLoginCode, removeSocialLinks, hmac, encryptSecretText};';
   const sandbox = {
-    exports: {}, require, console, crypto: globalThis.crypto,
+    exports: {}, require: name => ['./enrollments', './research'].includes(name) ? {} : require(name), console, crypto: globalThis.crypto,
     Request, Response, URL, URLSearchParams, AbortSignal, TextEncoder, TextDecoder, atob, btoa,
     fetch: async (url, init) => {
       if (String(url).endsWith('/token')) {

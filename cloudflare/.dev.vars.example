@@ -1,0 +1,15 @@
+# Copy to .dev.vars only when testing APIs that need these credentials.
+# /health, /v1/time, local migrations and the mocked auth test work without them.
+# Fill values locally; never commit .dev.vars or use these blanks in production.
+NEIS_API_KEY=
+PROFILE_ENCRYPTION_KEY=
+PROFILE_HASH_KEY=
+FIREBASE_WEB_API_KEY=
+FIREBASE_SERVICE_ACCOUNT_EMAIL=
+FIREBASE_SERVICE_ACCOUNT_PRIVATE_KEY=
+KAKAO_REST_API_KEY=
+KAKAO_CLIENT_SECRET=
+NAVER_CLIENT_ID=
+NAVER_CLIENT_SECRET=
+# Set by enrollment import for local testing; keep the generated key private.
+ENROLLMENT_KEY=

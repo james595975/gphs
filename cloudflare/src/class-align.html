@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="description" content="군포고등학교 선택과목 분반을 학번과 이름으로 확인하세요.">
+  <title>선택과목 분반 조회 · 군포고</title>
+  <style nonce="__NONCE__">
+    :root { color-scheme:dark; --bg:#090d14; --panel:#121923; --line:#26313f; --muted:#9aa9bb; --accent:#63dfc2; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100dvh; background:var(--bg); color:#f3f6fa; font-family:system-ui,-apple-system,"Noto Sans KR",sans-serif; line-height:1.6; }
+    body::before { content:""; position:fixed; inset:0; pointer-events:none; background:radial-gradient(ellipse at 50% 0%,#18444055,transparent 55%); }
+    main { position:relative; max-width:960px; margin:auto; padding:44px 24px 36px; }
+    .brand { display:flex; align-items:center; gap:10px; color:#bdc9d7; font-size:13px; letter-spacing:.04em; }
+    .mark { display:grid; place-items:center; width:34px; height:34px; background:#173c36; color:var(--accent); border:1px solid #2a6255; border-radius:10px; font-weight:750; font-size:12px; }
+    .intro { margin:52px 0 28px; }
+    .eyebrow { color:var(--accent); font-size:13px; margin:0 0 12px; }
+    h1 { font-size:clamp(28px,5vw,42px); line-height:1.28; letter-spacing:-.04em; margin:0 0 16px; }
+    .description { color:var(--muted); font-size:15px; margin:0; }
+    .panel { border:1px solid var(--line); background:linear-gradient(140deg,#17202bdf,#111822ef); border-radius:20px; }
+    form { padding:24px; display:grid; grid-template-columns:1fr 1fr 150px; gap:16px; align-items:end; }
+    label { display:block; font-size:13px; color:#c3cedb; margin-bottom:9px; }
+    input { width:100%; min-width:0; border:1px solid #344152; border-radius:11px; background:#090e17; color:#fff; padding:14px 15px; font:inherit; line-height:1.5; }
+    input::placeholder { color:#69798b; }
+    input:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+    button { cursor:pointer; border:0; border-radius:11px; padding:15px 20px; font:inherit; font-weight:700; line-height:1.5; }
+    .submit { position:relative; overflow:hidden; display:flex; align-items:center; justify-content:center; gap:9px; background:var(--accent); color:#07241e; min-height:54px; }
+    .spinner { display:none; width:18px; height:18px; border:2px solid #07241e44; border-top-color:#07241e; border-radius:50%; }
+    .submit.loading .spinner { display:block; }
+    .lookup-loading { display:none; align-items:center; gap:12px; margin-top:24px; padding:18px 22px; color:#b7c8d7; font-size:14px; }
+    .lookup-loading.visible { display:flex; }
+    .loading-dots { display:flex; gap:5px; }
+    .loading-dots span { width:6px; height:6px; background:var(--accent); border-radius:50%; }
+    .submit:hover { background:#85ebd3; }
+    button:focus-visible,summary:focus-visible { outline:2px solid var(--accent); outline-offset:4px; }
+    button:disabled { opacity:.65; cursor:wait; }
+    .hint { margin:14px 4px 0; color:var(--muted); font-size:12px; }
+    #message { font-size:14px; margin:18px 4px 0; color:#f6b6b1; }
+    #message:empty { display:none; }
+    #results { margin-top:36px; }
+    #results[hidden] { display:none; }
+    .result-heading { display:flex; justify-content:space-between; align-items:center; gap:16px; margin-bottom:18px; }
+    h2 { font-size:18px; margin:0; letter-spacing:-.02em; }
+    #student-heading span { color:var(--muted); font-size:13px; font-weight:400; margin-left:8px; }
+    .clear { background:transparent; color:var(--muted); padding:8px 0 8px 16px; font-size:13px; }
+    #classes { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+    .class-card { padding:22px; }
+    .card-top { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+    .block { font-size:13px; font-weight:750; color:var(--accent); background:#18352f; border:1px solid #285046; border-radius:8px; padding:4px 9px; }
+    .count { color:var(--muted); font-size:12px; }
+    h3 { font-size:19px; letter-spacing:-.03em; margin:17px 0 5px; }
+    .class-number { color:#b5c3d3; font-size:14px; margin:0 0 18px; }
+    details { border-top:1px solid var(--line); padding-top:14px; }
+    summary { color:#c2cedc; cursor:pointer; font-size:13px; }
+    .students { list-style:none; padding:0; margin:13px 0 0; max-height:268px; overflow-y:auto; scrollbar-width:thin; }
+    .students li { display:flex; align-items:center; gap:12px; border-radius:7px; padding:8px 10px; font-size:13px; }
+    .student-id { font-variant-numeric:tabular-nums; color:#8393a6; }
+    .students .me { background:#193930; color:#96efd5; }
+    .me .student-id { color:#83cdb9; }
+    .me-label { margin-left:auto; font-size:11px; color:var(--accent); }
+    footer { color:#728296; font-size:12px; margin-top:48px; padding-top:20px; border-top:1px solid #202936; display:flex; justify-content:space-between; gap:12px; }
+    @media(max-width:620px) { main{padding:26px 18px;} .intro{margin-top:38px;} form{grid-template-columns:1fr 1fr;gap:14px;padding:20px;} .submit{grid-column:1/-1;} #classes{grid-template-columns:1fr;} .class-card{padding:20px;} footer{flex-direction:column;gap:4px;} }
+    @media(prefers-reduced-motion:no-preference) {
+      .spinner{animation:spin .8s linear infinite;}
+      .loading-dots span{animation:pulse 1.1s ease-in-out infinite;}
+      .loading-dots span:nth-child(2){animation-delay:.15s;}
+      .loading-dots span:nth-child(3){animation-delay:.3s;}
+      .class-card{animation:appear .35s ease-out both;}
+      .class-card:nth-child(2){animation-delay:.06s;}.class-card:nth-child(3){animation-delay:.12s;}
+      .class-card:nth-child(4){animation-delay:.18s;}.class-card:nth-child(5){animation-delay:.24s;}.class-card:nth-child(6){animation-delay:.3s;}
+      @keyframes spin{to{transform:rotate(360deg);}}
+      @keyframes pulse{0%,80%,100%{opacity:.35;transform:translateY(0);}40%{opacity:1;transform:translateY(-4px);}}
+      @keyframes appear{from{opacity:0;transform:translateY(12px);}to{opacity:1;transform:translateY(0);}}
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="brand"><span class="mark" aria-hidden="true">GP</span><span>군포고등학교</span></div>
+    <header class="intro">
+      <p class="eyebrow">선택과목 분반 조회</p>
+      <h1>내 선택과목, 어느 반일까?</h1>
+      <p class="description">학번과 이름을 입력하면 분반과 같은 반 학생을 확인할 수 있어요.</p>
+    </header>
+    <form id="lookup-form" class="panel" autocomplete="off">
+      <div><label for="student-id">학번</label><input id="student-id" name="studentId" inputmode="numeric" pattern="[0-9]{5}" maxlength="5" placeholder="예: 20101" required aria-describedby="hint"></div>
+      <div><label for="student-name">이름</label><input id="student-name" name="studentName" maxlength="40" placeholder="이름 입력" required></div>
+      <button class="submit" id="submit" type="submit"><span class="spinner" aria-hidden="true"></span><span id="submit-label">분반 조회하기</span></button>
+    </form>
+    <p class="hint" id="hint">5자리 학번과 학교에 등록된 이름을 입력해 주세요.</p>
+    <p id="message" role="status" aria-live="polite"></p>
+    <div class="lookup-loading panel" id="lookup-loading" role="status" aria-live="polite" aria-hidden="true"><span class="loading-dots" aria-hidden="true"><span></span><span></span><span></span></span><span>선택과목 분반을 확인하고 있어요.</span></div>
+    <section id="results" aria-labelledby="student-heading" hidden>
+      <div class="result-heading"><h2 id="student-heading" tabindex="-1"></h2><button class="clear" id="clear" type="button">조회 결과 지우기</button></div>
+      <div id="classes"></div>
+    </section>
+    <footer><span>군포고등학교 · 선택과목 분반</span><span>사용 후 조회 결과를 지워 주세요.</span></footer>
+  </main>
+  <script nonce="__NONCE__">
+    const form = document.getElementById('lookup-form');
+    const submit = document.getElementById('submit');
+    const submitLabel = document.getElementById('submit-label');
+    const loading = document.getElementById('lookup-loading');
+    const message = document.getElementById('message');
+    const results = document.getElementById('results');
+    const classes = document.getElementById('classes');
+    const heading = document.getElementById('student-heading');
+    function node(tag, text, className) {
+      const element = document.createElement(tag);
+      if (text !== undefined) element.textContent = text;
+      if (className) element.className = className;
+      return element;
+    }
+    function clearResults() { results.hidden = true; classes.replaceChildren(); heading.replaceChildren(); }
+    function setLoading(active) {
+      submit.disabled = active; submit.classList.toggle('loading', active);
+      submitLabel.textContent = active ? '조회 중…' : '분반 조회하기';
+      loading.classList.toggle('visible', active); loading.setAttribute('aria-hidden', String(!active));
+      form.setAttribute('aria-busy', String(active));
+    }
+    function reset() { clearResults(); message.textContent = ''; form.reset(); setLoading(false); }
+    document.getElementById('clear').addEventListener('click', () => { reset(); document.getElementById('student-id').focus(); });
+    // No student information in URLs, storage, analytics, or restored page snapshots.
+    window.addEventListener('pagehide', reset);
+    form.addEventListener('input', () => { clearResults(); message.textContent = ''; });
+    form.addEventListener('submit', async event => {
+      event.preventDefault(); clearResults(); message.textContent = '';
+      if (submit.disabled) return;
+      setLoading(true);
+      const studentId = document.getElementById('student-id').value.trim();
+      const studentName = document.getElementById('student-name').value.trim();
+      try {
+        const response = await fetch('/v1/enrollments/lookup', {
+          method:'POST', headers:{'content-type':'application/json'}, credentials:'omit', cache:'no-store',
+          body:JSON.stringify({studentId, studentName}), signal:AbortSignal.timeout(15000)
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '분반 정보를 불러오지 못했습니다.');
+        // Ignore a response if the user changed the lookup fields while it was loading.
+        if (studentId !== document.getElementById('student-id').value.trim() || studentName !== document.getElementById('student-name').value.trim()) return;
+        heading.textContent = data.student.name + '님의 분반';
+        heading.append(node('span', data.student.id + ' · ' + data.classes.length + '개 분반'));
+        for (const item of data.classes) {
+          const card = node('article', undefined, 'panel class-card');
+          const top = node('div', undefined, 'card-top');
+          top.append(node('span', item.block, 'block'), node('span', '총 ' + item.students.length + '명', 'count'));
+          card.append(top, node('h3', item.subject), node('p', item.classNumber + '반', 'class-number'));
+          const details = node('details');
+          const list = node('ul', undefined, 'students');
+          details.append(node('summary', '같은 반 학생 보기'));
+          for (const student of item.students) {
+            const row = node('li', undefined, student.isMe ? 'me' : '');
+            row.append(node('span', student.id, 'student-id'), node('span', student.name));
+            if (student.isMe) row.append(node('span', '나', 'me-label'));
+            list.append(row);
+          }
+          details.append(list); card.append(details); classes.append(card);
+        }
+        results.hidden = false; heading.focus();
+      } catch (error) {
+        message.textContent = error.name === 'TimeoutError' ? '응답이 늦어지고 있습니다. 다시 조회해 주세요.' : error instanceof TypeError ? '인터넷 연결을 확인하고 다시 조회해 주세요.' : error.message;
+      } finally { setLoading(false); }
+    });
+  </script>
+</body>
+</html>

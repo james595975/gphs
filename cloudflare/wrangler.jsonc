@@ -2,11 +2,14 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "gunpo-school",
   "main": "src/index.ts",
+  "rules": [{"type": "Text", "globs": ["**/*.html"], "fallthrough": true}],
   "compatibility_date": "2026-07-24",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "preview_urls": false,
+  "ai": {"binding": "AI"},
   "vars": {
+    "ENROLLMENT_RATE_LIMIT": "300",
     "FIREBASE_PROJECT_ID": "gphs-beta",
     "PROFILE_CONSENT_VERSION": "2026-09-04",
     "ACCOUNT_CONSENT_VERSION": "2026-09-07"
